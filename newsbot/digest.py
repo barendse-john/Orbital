@@ -50,13 +50,15 @@ class DigestService:
         per_topic: list[tuple[str, list[Article]]] = []
         empty: list[str] = []
         seen_keys: set[str] = set()
+        sources: set[str] = set()
 
         for topic, result in zip(topics, results):
             if isinstance(result, BaseException):
                 log.error("Topic %r failed: %s", topic.label, result)
                 empty.append(topic.label)
                 continue
-            articles, _source = result
+            articles, source = result
+            sources.add(source)
             # A story matching two topics is only worth sending once.
             fresh = [a for a in articles if a.key not in seen_keys]
             seen_keys.update(a.key for a in fresh)
@@ -80,7 +82,12 @@ class DigestService:
         )
 
         blocks = [formatting.topic_block(label, arts) for label, arts in per_topic]
-        return blocks, empty, len(flat), _pick_lead(flat)
+        lead = _pick_lead(flat)
+        # One line that explains any "why no picture?" without guesswork.
+        log.info("Digest for %s: %d articles via %s; lead picture from %s",
+                 user.user_id, len(flat), "+".join(sorted(sources)) or "none",
+                 lead.url if lead else "nothing previewable")
+        return blocks, empty, len(flat), lead
 
     # ------------------------------------------------------------- sending
 
