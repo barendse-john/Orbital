@@ -1,0 +1,45 @@
+# Copy to config.yaml and edit. Secrets live in .env; ${VARS} are read from there.
+
+telegram:
+  token: ${TELEGRAM_BOT_TOKEN}
+  # Telegram numeric user IDs allowed to use the bot. Message the bot and it
+  # will tell you your own ID, or ask a friend to message @userinfobot.
+  whitelist: []
+  # Admins can run /allow and /deny to add or remove people at runtime.
+  admins: []
+
+ai:
+  # anthropic | ollama  -- switch freely, restart to apply
+  backend: anthropic
+
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY}
+    model: claude-haiku-4-5
+    max_tokens: 600
+
+  ollama:
+    base_url: http://localhost:11434
+    model: llama3.2:3b
+    # Pi 4/5 with no GPU: keep the model small or summaries will crawl.
+    timeout_seconds: 120
+
+news:
+  language: en
+  country: us
+  lookback_hours: 24
+  max_articles_per_topic: 5
+  gnews:
+    api_key: ${GNEWS_API_KEY}
+    daily_quota: 100        # free tier; RSS takes over once this is spent
+  rss:
+    enabled: true           # Google News RSS: free, no key, no quota
+
+digest:
+  default_time: "08:00"     # used until a user picks their own
+  # Skip sending anything when no topic turned up news
+  skip_when_empty: false
+
+database:
+  path: ./data/newsbot.db
+
+log_level: INFO

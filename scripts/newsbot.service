@@ -1,0 +1,27 @@
+# Install with:
+#   sudo cp scripts/newsbot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now newsbot
+# Adjust User and the two paths if your project doesn't live in /home/pi/newsbot.
+
+[Unit]
+Description=Telegram news bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/newsbot
+ExecStart=/home/pi/newsbot/.venv/bin/python -m newsbot --config /home/pi/newsbot/config.yaml
+Restart=always
+RestartSec=10
+# Don't hammer Telegram if something is badly broken
+StartLimitBurst=5
+StartLimitIntervalSec=120
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

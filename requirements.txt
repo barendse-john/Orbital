@@ -1,0 +1,10 @@
+# Core
+python-telegram-bot[job-queue]>=21.6,<22
+httpx>=0.27,<1
+feedparser>=6.0.11
+PyYAML>=6.0.1
+python-dotenv>=1.0.1
+
+# Offline lat/lon -> IANA timezone (optional: without it, the bot asks for a
+# city name instead of accepting Telegram's "share location" button).
+timezonefinder>=6.5.0
