@@ -60,6 +60,12 @@ CREATE TABLE IF NOT EXISTS allowed_users (
     added_by INTEGER,
     added_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS admin_users (
+    user_id  INTEGER PRIMARY KEY,
+    added_by INTEGER,
+    added_at TEXT NOT NULL
+);
 """
 
 
@@ -369,6 +375,49 @@ class Database:
             )
             return cur.rowcount > 0
         return await asyncio.to_thread(_deny)
+
+    async def admin_user_ids(self) -> set[int]:
+        rows = await asyncio.to_thread(
+            self._read, "SELECT user_id FROM admin_users", ()
+        )
+        return {r["user_id"] for r in rows}
+
+    async def add_admin(self, user_id: int, added_by: int | None = None) -> None:
+        await asyncio.to_thread(
+            self._write,
+            """INSERT OR IGNORE INTO admin_users (user_id, added_by, added_at)
+               VALUES (?, ?, ?)""",
+            (user_id, added_by, _utcnow()),
+        )
+
+    async def bootstrap_owner(self, user_id: int) -> bool:
+        """First-ever user claims ownership (whitelist + admin) atomically.
+
+        Returns True if this call was the one that claimed it, False if
+        someone already got there first (or a static config entry exists).
+        """
+        def _claim() -> bool:
+            with self._lock:
+                empty = self.conn.execute(
+                    "SELECT (SELECT COUNT(*) FROM allowed_users) "
+                    "+ (SELECT COUNT(*) FROM admin_users) AS n"
+                ).fetchone()["n"] == 0
+                if not empty:
+                    return False
+                now = _utcnow()
+                self.conn.execute(
+                    """INSERT OR IGNORE INTO allowed_users
+                       (user_id, added_by, added_at) VALUES (?, NULL, ?)""",
+                    (user_id, now),
+                )
+                self.conn.execute(
+                    """INSERT OR IGNORE INTO admin_users
+                       (user_id, added_by, added_at) VALUES (?, NULL, ?)""",
+                    (user_id, now),
+                )
+                self.conn.commit()
+                return True
+        return await asyncio.to_thread(_claim)
 
     # ------------------------------------------------------------- stats
 

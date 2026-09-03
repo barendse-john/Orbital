@@ -56,18 +56,20 @@ ANTHROPIC_API_KEY=sk-ant-...
 GNEWS_API_KEY=
 ```
 
-`config.yaml` holds everything else. The one thing you must edit is the
-whitelist - the bot ignores everyone else:
+`config.yaml` holds everything else - you don't need to edit the whitelist
+by hand. Leave it empty, start the bot, and message it: the first person to
+do so automatically becomes its owner (whitelisted and admin), no restart or
+YAML editing required.
 
 ```yaml
 telegram:
-  whitelist: [123456789]   # your Telegram user ID
-  admins: [123456789]      # can run /allow and /deny
+  whitelist: []
+  admins: []
 ```
 
-**Don't know your ID?** Start the bot, message it, and it replies with your ID
-in the rejection notice. Put that number in `whitelist` and `admins`, restart,
-and you're in.
+Only fill these in yourself if you want to hand-pick the owner ahead of time,
+or you're restoring a bot's `config.yaml` without its database and want to
+skip the claim step.
 
 ### 4. Check and run
 

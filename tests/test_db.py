@@ -68,6 +68,22 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.db.gnews_used_today(), 100)
         self.assertFalse(await self.db.claim_gnews_call(100))
 
+    async def test_bootstrap_owner_claims_when_nobody_has(self):
+        self.assertTrue(await self.db.bootstrap_owner(1))
+        self.assertIn(1, await self.db.allowed_user_ids())
+        self.assertIn(1, await self.db.admin_user_ids())
+
+    async def test_bootstrap_only_claims_once(self):
+        await self.db.bootstrap_owner(1)
+        self.assertFalse(await self.db.bootstrap_owner(2))
+        self.assertNotIn(2, await self.db.allowed_user_ids())
+        self.assertNotIn(2, await self.db.admin_user_ids())
+
+    async def test_bootstrap_refuses_once_someone_is_already_allowed(self):
+        await self.db.allow_user(9)
+        self.assertFalse(await self.db.bootstrap_owner(1))
+        self.assertNotIn(1, await self.db.admin_user_ids())
+
     async def test_access_list_round_trip(self):
         await self.db.allow_user(99, added_by=1)
         self.assertIn(99, await self.db.allowed_user_ids())

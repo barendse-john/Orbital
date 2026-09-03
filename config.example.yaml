@@ -2,8 +2,10 @@
 
 telegram:
   token: ${TELEGRAM_BOT_TOKEN}
-  # Telegram numeric user IDs allowed to use the bot. Message the bot and it
-  # will tell you your own ID, or ask a friend to message @userinfobot.
+  # Leave both empty and the first person to message the bot automatically
+  # becomes its owner (whitelisted + admin) - no editing this file required.
+  # Only set these if you want to hand-pick the owner in advance, or you're
+  # restoring a bot onto a fresh database and want to skip re-claiming it.
   whitelist: []
   # Admins can run /allow and /deny to add or remove people at runtime.
   admins: []

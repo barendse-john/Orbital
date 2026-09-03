@@ -98,6 +98,20 @@ class BotHandlers:
         user = update.effective_user
         if user is None:
             return False
+
+        # Nobody has claimed this bot yet (fresh install, no config entries,
+        # empty database) - the first person to message it becomes the owner.
+        if not self.cfg.telegram.whitelist and not self.cfg.telegram.admins:
+            if await self.db.bootstrap_owner(user.id):
+                log.info("Bootstrap: %s (id %s) claimed ownership", user.username,
+                         user.id)
+                await update.effective_message.reply_text(
+                    "🔑 Nobody had claimed this bot yet, so you just did - "
+                    "you're the owner and first admin. You can add friends "
+                    "later with /allow.\n"
+                )
+                return True
+
         allowed = set(self.cfg.telegram.whitelist) | set(self.cfg.telegram.admins)
         allowed |= await self.db.allowed_user_ids()
         if user.id in allowed:
@@ -111,8 +125,10 @@ class BotHandlers:
         )
         return False
 
-    def _is_admin(self, user_id: int) -> bool:
-        return user_id in set(self.cfg.telegram.admins)
+    async def _is_admin(self, user_id: int) -> bool:
+        if user_id in set(self.cfg.telegram.admins):
+            return True
+        return user_id in await self.db.admin_user_ids()
 
     async def _ready_user(self, update: Update, context):
         """Whitelist check + user row + onboarding. None means stop here."""
@@ -515,7 +531,7 @@ class BotHandlers:
     async def cmd_allow(self, update: Update, context) -> None:
         if not await self._allowed(update):
             return
-        if not self._is_admin(update.effective_user.id):
+        if not await self._is_admin(update.effective_user.id):
             await update.effective_message.reply_text("Admins only.")
             return
         try:
@@ -531,7 +547,7 @@ class BotHandlers:
     async def cmd_deny(self, update: Update, context) -> None:
         if not await self._allowed(update):
             return
-        if not self._is_admin(update.effective_user.id):
+        if not await self._is_admin(update.effective_user.id):
             await update.effective_message.reply_text("Admins only.")
             return
         try:

@@ -184,7 +184,8 @@ class Config:
                 "No news source: GNews has no API key and RSS is disabled."
             )
         if not self.telegram.whitelist and not self.telegram.admins:
-            log.warning(
-                "Whitelist is empty - nobody can use the bot yet. Message it "
-                "anyway and it will reply with your Telegram user ID."
+            log.info(
+                "No whitelist configured - the first person to message this "
+                "bot becomes its owner automatically. Message it now if "
+                "that should be you."
             )
