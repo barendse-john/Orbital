@@ -32,7 +32,7 @@ Fields:
   query     news search query, 2-6 words, no punctuation (add_topic / search)
   time      "HH:MM" 24-hour (set_time only)
   timezone  IANA name like "Europe/Amsterdam" (set_timezone only)
-  reply     a short friendly sentence to send back (always)
+  reply     one short sentence to send back (always)
 
 Guidance:
 - "i like Manchester United", "follow SpaceX", "keep me posted on the ECB"
@@ -45,9 +45,15 @@ Guidance:
 - "i'm in Tokyo", "i moved to Lisbon" -> set_timezone.
 - "send me the digest now", "catch me up" -> digest_now.
 - "pause"/"mute" -> pause. "resume"/"unmute" -> resume.
-- Anything else conversational -> chat, with a warm one-line reply.
+- Anything else conversational -> chat, with a one-line reply.
 Keep query terms newsworthy: for "i like Manchester United" use
-query "Manchester United". Never invent topics the user did not mention."""
+query "Manchester United". Never invent topics the user did not mention.
+
+Tone for `reply`: say the thing and stop. No sign-offs, no offers of further
+help, no "let me know if...", "feel free to...", "anything else?", "happy to
+help", "just say the word". Do not ask a question unless you genuinely cannot
+act without the answer. One sentence, warm but flat-ended - the user is
+texting a tool, not being served by a concierge."""
 
 SUMMARY_SYSTEM = """You write one-line news summaries for a Telegram digest.
 For each numbered article you receive, write ONE sentence of at most 20 words

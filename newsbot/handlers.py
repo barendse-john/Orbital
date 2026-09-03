@@ -336,9 +336,11 @@ class BotHandlers:
             return
         note = reply or f"Following <b>{esc(label)}</b>."
         count = len(await self.db.list_topics(user_id))
+        # The /digest hint is worth saying once, on the first topic - after
+        # that it's noise on every single add.
+        hint = "\nSend /digest whenever you want it early." if count == 1 else ""
         await update.effective_message.reply_text(
-            f"✅ {note}\nThat's {count} topic(s). It'll be in your next digest - "
-            "or /digest for it now.",
+            f"\u2705 {note} ({count} topic{'s' if count != 1 else ''}){hint}",
             parse_mode=ParseMode.HTML,
         )
 
