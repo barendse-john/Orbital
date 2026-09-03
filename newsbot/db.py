@@ -41,6 +41,16 @@ CREATE TABLE IF NOT EXISTS topics (
 CREATE UNIQUE INDEX IF NOT EXISTS topics_user_label
     ON topics (user_id, lower(label));
 
+-- A topic the bot has asked a narrowing question about and is waiting on.
+-- In the database rather than in memory so a deploy restart mid-question
+-- doesn't leave the user answering into the void.
+CREATE TABLE IF NOT EXISTS pending_topics (
+    user_id  INTEGER PRIMARY KEY,
+    label    TEXT NOT NULL,
+    question TEXT NOT NULL,
+    asked_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sent_articles (
     user_id     INTEGER NOT NULL,
     article_key TEXT NOT NULL,
@@ -247,6 +257,58 @@ class Database:
             (user_id,),
         )
         return [Topic(r["id"], r["label"], r["query"]) for r in rows]
+
+    async def update_topic_query(self, user_id: int, label: str,
+                                 query: str) -> bool:
+        """Repoint an existing topic at a better search query."""
+        def _update() -> bool:
+            cur = self._write(
+                """UPDATE topics SET query = ?
+                   WHERE user_id = ? AND lower(label) = lower(?)""",
+                (query.strip(), user_id, label.strip()),
+            )
+            return cur.rowcount > 0
+        return await asyncio.to_thread(_update)
+
+    # -------------------------------------------------- pending clarification
+
+    async def set_pending_topic(self, user_id: int, label: str,
+                                question: str) -> None:
+        await asyncio.to_thread(
+            self._write,
+            """INSERT INTO pending_topics (user_id, label, question, asked_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET
+                   label = excluded.label,
+                   question = excluded.question,
+                   asked_at = excluded.asked_at""",
+            (user_id, label.strip(), question.strip(), _utcnow()),
+        )
+
+    async def get_pending_topic(
+        self, user_id: int, *, max_age_minutes: int = 15,
+    ) -> tuple[str, str] | None:
+        """(label, question), or None once it has gone stale."""
+        rows = await asyncio.to_thread(
+            self._read,
+            "SELECT label, question, asked_at FROM pending_topics WHERE user_id = ?",
+            (user_id,),
+        )
+        if not rows:
+            return None
+        try:
+            asked = datetime.fromisoformat(rows[0]["asked_at"])
+        except ValueError:
+            asked = datetime.now(timezone.utc)
+        if datetime.now(timezone.utc) - asked > timedelta(minutes=max_age_minutes):
+            await self.clear_pending_topic(user_id)
+            return None
+        return rows[0]["label"], rows[0]["question"]
+
+    async def clear_pending_topic(self, user_id: int) -> None:
+        await asyncio.to_thread(
+            self._write, "DELETE FROM pending_topics WHERE user_id = ?", (user_id,)
+        )
 
     async def clear_topics(self, user_id: int) -> int:
         def _clear() -> int:

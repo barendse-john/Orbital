@@ -24,7 +24,8 @@ from telegram.ext import (
 )
 
 from . import timezones
-from .brain import Intent, normalise_time, parse_intent, resolve_timezone, valid_timezone
+from .brain import (Intent, TopicPlan, normalise_time, parse_intent,
+                    plain_query, plan_topic, resolve_timezone, valid_timezone)
 from .db import Database
 from .digest import DigestService
 from .formatting import esc
@@ -47,6 +48,7 @@ HELP_TEXT = """<b>Just talk to me normally:</b>
 /topics - what you follow
 /add &lt;topic&gt; - follow something
 /remove &lt;topic&gt; - stop following it
+/retune &lt;topic&gt; - narrow what a topic searches for
 /search &lt;query&gt; - search right now
 /digest - send today's digest immediately
 /time &lt;HH:MM&gt; - set your daily digest time
@@ -54,6 +56,17 @@ HELP_TEXT = """<b>Just talk to me normally:</b>
 /pause and /resume - mute or unmute the daily digest
 /status - your settings and today's API usage
 /help - this message"""
+
+
+_SKIP_ANSWERS = {
+    "skip", "any", "anything", "all", "everything", "whatever", "dunno",
+    "idk", "no preference", "doesn't matter", "does not matter", "don't mind",
+    "no idea", "just save it", "leave it", "as is",
+}
+
+
+def _is_skip(text: str) -> bool:
+    return text.strip().lower().rstrip("!.?") in _SKIP_ANSWERS
 
 
 class BotHandlers:
@@ -76,6 +89,7 @@ class BotHandlers:
         app.add_handler(CommandHandler("topics", self.cmd_topics))
         app.add_handler(CommandHandler("add", self.cmd_add))
         app.add_handler(CommandHandler("remove", self.cmd_remove))
+        app.add_handler(CommandHandler("retune", self.cmd_retune))
         app.add_handler(CommandHandler("clear", self.cmd_clear))
         app.add_handler(CommandHandler("search", self.cmd_search))
         app.add_handler(CommandHandler("digest", self.cmd_digest))
@@ -268,6 +282,15 @@ class BotHandlers:
             if await self._handle_onboarding(update, context, text):
                 return
 
+        # A narrowing question is outstanding: this message is the answer,
+        # unless they typed a command, which means they moved on.
+        pending = await self.db.get_pending_topic(tg.id)
+        if pending:
+            await self.db.clear_pending_topic(tg.id)
+            if not text.startswith("/"):
+                await self._answer_pending_topic(update, context, pending, text)
+                return
+
         await context.bot.send_chat_action(tg.id, ChatAction.TYPING)
         topics = await self.db.list_topics(tg.id)
         intent = await parse_intent(self.ai, text, topics=[t.label for t in topics])
@@ -278,8 +301,8 @@ class BotHandlers:
         action = intent.action
 
         if action == "add_topic" and intent.topic:
-            await self._add_topic(update, intent.topic, intent.query or intent.topic,
-                                  intent.reply)
+            await self._start_add_topic(update, context, intent.topic,
+                                        intent.reply)
         elif action == "remove_topic" and intent.topic:
             await self._remove_topic(update, intent.topic)
         elif action == "list_topics":
@@ -324,13 +347,60 @@ class BotHandlers:
 
     # ------------------------------------------------------------- actions
 
-    async def _add_topic(self, update: Update, label: str, query: str,
-                         reply: str | None = None) -> None:
+    async def _start_add_topic(self, update: Update, context, label: str,
+                               reply: str | None = None) -> None:
+        """Plan the query first; ask one narrowing question if it's too broad."""
+        user_id = update.effective_user.id
+        existing = await self.db.list_topics(user_id)
+        if any(t.label.lower() == label.lower() for t in existing):
+            await update.effective_message.reply_text(
+                f"Already following <b>{esc(label)}</b>. "
+                f"/retune {esc(label)} to narrow it.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        await context.bot.send_chat_action(user_id, ChatAction.TYPING)
+        plan = await plan_topic(self.ai, label)
+        if plan.question:
+            await self.db.set_pending_topic(user_id, label, plan.question)
+            await update.effective_message.reply_text(
+                f"{esc(plan.question)}\n\n<i>Or say \"skip\" to follow all of "
+                f"{esc(label)}.</i>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        await self._save_topic(update, plan.label, plan.query or label, reply)
+
+    async def _answer_pending_topic(self, update: Update, context,
+                                    pending: tuple[str, str], text: str) -> None:
+        label, question = pending
+        user_id = update.effective_user.id
+        await context.bot.send_chat_action(user_id, ChatAction.TYPING)
+
+        if _is_skip(text):
+            plan = TopicPlan(label=label, query=plain_query(label))
+        else:
+            plan = await plan_topic(self.ai, label, answer=text,
+                                    question_asked=question)
+
+        # A topic that already exists is being retuned, and keeps its own
+        # label - renaming what someone follows out from under them is rude.
+        existing = await self.db.list_topics(user_id)
+        if any(t.label.lower() == label.lower() for t in existing):
+            await self._save_topic(update, label, plan.query or label)
+        else:
+            await self._save_topic(update, plan.label, plan.query or label)
+
+    async def _save_topic(self, update: Update, label: str, query: str,
+                          reply: str | None = None) -> None:
         user_id = update.effective_user.id
         created = await self.db.add_topic(user_id, label, query)
+        shown = f"\n<i>searching: {esc(query)}</i>"
         if not created:
+            await self.db.update_topic_query(user_id, label, query)
             await update.effective_message.reply_text(
-                f"Already following <b>{esc(label)}</b>.",
+                f"\U0001f3af Retuned <b>{esc(label)}</b>.{shown}",
                 parse_mode=ParseMode.HTML,
             )
             return
@@ -340,7 +410,8 @@ class BotHandlers:
         # that it's noise on every single add.
         hint = "\nSend /digest whenever you want it early." if count == 1 else ""
         await update.effective_message.reply_text(
-            f"\u2705 {note} ({count} topic{'s' if count != 1 else ''}){hint}",
+            f"\u2705 {note} ({count} topic{'s' if count != 1 else ''})"
+            f"{shown}{hint}",
             parse_mode=ParseMode.HTML,
         )
 
@@ -363,9 +434,13 @@ class BotHandlers:
                 "No topics yet. Try \"i like Formula 1\" or /add space launches."
             )
             return
-        lines = "\n".join(f"• <b>{esc(t.label)}</b>" for t in topics)
+        lines = "\n".join(
+            f"• <b>{esc(t.label)}</b>\n   <i>{esc(t.query)}</i>" for t in topics
+        )
         await update.effective_message.reply_text(
-            f"You're following:\n{lines}", parse_mode=ParseMode.HTML
+            f"You're following:\n{lines}\n\n"
+            "<i>/retune &lt;topic&gt; if one is pulling in the wrong news.</i>",
+            parse_mode=ParseMode.HTML,
         )
 
     async def _run_search(self, update: Update, context, query: str) -> None:
@@ -434,7 +509,39 @@ class BotHandlers:
         if not topic:
             await update.effective_message.reply_text("Usage: /add Formula 1")
             return
-        await self._add_topic(update, topic, topic)
+        await self._start_add_topic(update, context, topic)
+
+    async def cmd_retune(self, update: Update, context) -> None:
+        if not await self._ready_user(update, context):
+            return
+        user_id = update.effective_user.id
+        wanted = " ".join(context.args).strip()
+        topics = await self.db.list_topics(user_id)
+        if not wanted or not topics:
+            await update.effective_message.reply_text(
+                "Usage: /retune finance - /topics lists what you follow."
+            )
+            return
+        needle = wanted.lower()
+        match = next((t for t in topics if t.label.lower() == needle), None) \
+            or next((t for t in topics if needle in t.label.lower()), None)
+        if match is None:
+            await update.effective_message.reply_text(
+                f"You're not following anything like \"{esc(wanted)}\".",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        await context.bot.send_chat_action(user_id, ChatAction.TYPING)
+        plan = await plan_topic(self.ai, match.label)
+        if plan.question:
+            await self.db.set_pending_topic(user_id, match.label, plan.question)
+            await update.effective_message.reply_text(
+                f"{esc(plan.question)}\n\n<i>Or say \"skip\" to leave it as it "
+                f"is.</i>", parse_mode=ParseMode.HTML,
+            )
+            return
+        await self._save_topic(update, match.label, plan.query or match.query)
 
     async def cmd_remove(self, update: Update, context) -> None:
         if not await self._ready_user(update, context):

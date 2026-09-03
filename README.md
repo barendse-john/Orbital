@@ -14,6 +14,7 @@ news source and the model you choose.
 | | |
 |---|---|
 | **Understands plain English** | *"i like Manchester United"* saves a topic. *"any updates on Starship?"* runs a one-off search. *"send it at 7am"* moves your digest. |
+| **Asks before it guesses** | Say *"finance"* and it asks which part you meant, then turns the answer into a real search query (`"financial markets" OR "central bank"`) instead of matching the word anywhere. /retune fixes a topic that drifted. |
 | **Daily digest** | One short message at a time you pick, in your own timezone. Six articles at most, picked round-robin so every topic gets a look-in. Headline + link + a one-line summary per article, with the lead story's picture above it. |
 | **Per-person setup** | Whitelisted friends each get their own topics, their own digest time, their own timezone. |
 | **Never repeats itself** | An article you've already been sent won't come back, even if a different source or a second topic turns it up. |
@@ -117,6 +118,7 @@ And the commands, which keep working even if the model is unreachable:
 /topics            what you follow
 /add <topic>       follow something
 /remove <topic>    stop following it
+/retune <topic>    narrow what a topic searches for
 /search <query>    search now
 /digest            send today's digest immediately
 /time 08:00        set your digest time

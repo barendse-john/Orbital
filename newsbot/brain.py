@@ -55,6 +55,40 @@ help", "just say the word". Do not ask a question unless you genuinely cannot
 act without the answer. One sentence, warm but flat-ended - the user is
 texting a tool, not being served by a concierge."""
 
+TOPIC_SYSTEM = """You turn a person's stated interest into a news search query.
+
+Reply with ONE JSON object and nothing else:
+  question  one short question that would narrow the topic, or null
+  label     short human label for the topic, 1-4 words
+  query     the search query, or null when you are asking a question
+
+Ask a question ONLY when the topic is so broad that the results would be
+unrelated to what they meant. "finance" matches a local water-treatment grant
+and a film production company; "Manchester United" and "Starship launches" are
+already specific and need no question. One question, with two or three
+concrete options in it, never more.
+
+When you write a query:
+- Syntax: "quoted phrases" for anything multi-word, OR between alternatives,
+  AND to require both, NOT to exclude. Parentheses group.
+- 2 to 6 phrases, the words a headline would actually use.
+- Under 180 characters.
+- Only what they asked for - never widen the topic on their behalf.
+
+Examples:
+  Interest: finance
+    -> {"question": "Markets and central banks, company earnings, or crypto?",
+        "label": "Finance", "query": null}
+  Interest: finance / They answered: markets and rates, not crypto
+    -> {"question": null, "label": "Markets and Rates",
+        "query": "\"financial markets\" OR \"central bank\" OR \"interest rates\" NOT crypto"}
+  Interest: Manchester United
+    -> {"question": null, "label": "Manchester United",
+        "query": "\"Manchester United\""}
+  Interest: space
+    -> {"question": "Rocket launches, satellites, or space science missions?",
+        "label": "Space", "query": null}"""
+
 SUMMARY_SYSTEM = """You write one-line news summaries for a Telegram digest.
 For each numbered article you receive, write ONE sentence of at most 20 words
 saying what actually happened - concrete facts, no hype, no "this article
@@ -246,6 +280,117 @@ def normalise_time(text: str) -> str | None:
         if 0 <= hour < 24 and 0 <= minute < 60:
             return f"{hour:02d}:{minute:02d}"
     return None
+
+
+# --------------------------------------------------------------------------
+# Topics: one clarifying question, then a query worth searching
+# --------------------------------------------------------------------------
+
+MAX_QUERY = 180
+
+_STOPWORDS = {
+    "the", "and", "but", "not", "for", "with", "about", "just", "only",
+    "really", "kind", "sort", "like", "mainly", "mostly", "stuff", "things",
+    "news", "please", "yeah", "yes", "nah", "some", "any", "that", "this",
+    "more", "less", "want", "would", "prefer", "rather", "them", "they",
+}
+
+
+@dataclass
+class TopicPlan:
+    label: str
+    query: str | None = None
+    question: str | None = None
+
+
+def quote(phrase: str) -> str:
+    """Multi-word phrases only match as a unit when they are quoted."""
+    phrase = re.sub(r'["()]', " ", phrase).strip()
+    phrase = re.sub(r"\s+", " ", phrase)
+    return f'"{phrase}"' if " " in phrase else phrase
+
+
+def plain_query(label: str, answer: str | None = None) -> str:
+    """The query to use when the model can't write one."""
+    query = quote(label)
+    # "markets and rates, not crypto" - everything after the negation would
+    # otherwise be pulled in as a thing they wanted.
+    wanted = re.split(r"\b(?:not|except|excluding|no)\b", answer or "", 1,
+                      flags=re.I)[0]
+    extras = [
+        w for w in re.findall(r"[A-Za-z0-9']{4,}", wanted)
+        if w.lower() not in _STOPWORDS and w.lower() not in label.lower()
+    ][:4]
+    if extras:
+        query = f"{query} AND ({' OR '.join(extras)})"
+    return query[:MAX_QUERY].strip()
+
+
+def query_is_sane(query: str) -> bool:
+    """Unbalanced quotes or brackets make the news APIs error out."""
+    return (
+        bool(query)
+        and len(query) <= MAX_QUERY
+        and query.count('"') % 2 == 0
+        and query.count("(") == query.count(")")
+    )
+
+
+async def plan_topic(
+    ai: AIBackend | None, label: str, *,
+    answer: str | None = None, question_asked: str | None = None,
+) -> TopicPlan:
+    """Narrow an interest into a search query, asking once if it's too broad.
+
+    With no `answer` the model may reply with a question instead of a query.
+    Once an answer is in hand it must produce the query - the bot asks at most
+    one question per topic, because a second feels like an interrogation.
+    """
+    if ai is not None:
+        parts = [f"Interest: {label}"]
+        if question_asked:
+            parts.append(f"You asked: {question_asked}")
+        if answer:
+            parts.append(f"They answered: {answer}")
+            parts.append("Write the query now. Do not ask anything further.")
+        try:
+            raw = await ai.complete(
+                TOPIC_SYSTEM, "\n".join(parts), max_tokens=300
+            )
+            data = extract_json(raw)
+            if isinstance(data, dict):
+                plan = _plan_from_dict(
+                    data, label, may_ask=answer is None and not question_asked
+                )
+                if plan is not None:
+                    return plan
+            log.warning("Unparseable topic plan: %s", raw[:200])
+        except AIError as exc:
+            log.warning("Topic planning unavailable (%s); using a plain query",
+                        exc)
+
+    return TopicPlan(label=label, query=plain_query(label, answer))
+
+
+def _plan_from_dict(data: dict, label: str, *, may_ask: bool) -> TopicPlan | None:
+    chosen = _clean(data.get("label")) or label
+    question = _clean(data.get("question"))
+    # NOT _clean: it strips surrounding quotes, and a query that is one
+    # quoted phrase would quietly become a loose bag of words.
+    query = str(data.get("query") or "").strip()
+    if query.lower() in ("", "null", "none"):
+        query = None
+
+    if question and may_ask and not query:
+        # Keep the label the user's own words until they have answered.
+        return TopicPlan(label=label, question=question[:300])
+    if not query:
+        return None
+    query = re.sub(r"\s+", " ", query).strip()
+    if not query_is_sane(query):
+        log.warning("Discarding malformed query %r", query[:120])
+        return TopicPlan(label=chosen, query=plain_query(label))
+    return TopicPlan(label=chosen, query=query)
 
 
 # --------------------------------------------------------------------------
