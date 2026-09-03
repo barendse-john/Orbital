@@ -129,6 +129,46 @@ And the commands, which keep working even if the model is unreachable:
 
 ---
 
+## Backups
+
+Git covers the code. It deliberately doesn't cover the three things that
+would actually hurt to lose, because they're secret or machine-specific:
+`.env` (your API keys), `config.yaml`, and `data/newsbot.db` (topics,
+timezone, digest time, sent-article history).
+
+```bash
+./scripts/backup.sh
+```
+
+Writes a timestamped `.tar.gz` to `~/newsbot-backups/`, keeping the last 14.
+The database is snapshotted through sqlite3's backup API rather than copied,
+so a backup taken while the bot is mid-write is still consistent. The archive
+holds your keys in plaintext and is written `0600` accordingly.
+
+**Get it off the Pi.** An SD card that dies takes its own backups with it:
+
+```bash
+scp john@raspberrypi.local:~/newsbot-backups/newsbot-*.tar.gz .
+```
+
+**To restore onto a fresh card**, clone the repo as usual, then unpack over
+the top:
+
+```bash
+cd ~/newsbot
+tar -xzf newsbot-20260903-220546.tar.gz
+mkdir -p data && mv newsbot.db data/
+sudo systemctl restart newsbot
+```
+
+Your topics, schedule and read history come back exactly as they were.
+
+**To run it weekly**, add a cron entry (`crontab -e`):
+
+```
+0 4 * * 0 /home/john/newsbot/scripts/backup.sh
+```
+
 ## Keeping the Pi up to date
 
 The Pi's checkout is a git clone of this repo, so pushing a change to GitHub
