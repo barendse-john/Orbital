@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
+from telegram import LinkPreviewOptions
 from telegram.constants import ParseMode
 from telegram.error import Forbidden, TelegramError
 
@@ -27,11 +29,16 @@ class DigestService:
 
     # ------------------------------------------------------------ building
 
-    async def collect(self, user: User) -> tuple[list[str], list[str], int]:
-        """Returns (rendered blocks, topics with nothing new, article count)."""
+    async def collect(
+        self, user: User,
+    ) -> tuple[list[str], list[str], int, Article | None]:
+        """Returns (rendered blocks, topics with nothing new, count, lead).
+
+        `lead` is the article whose picture heads the message, if any.
+        """
         topics = await self.db.list_topics(user.user_id)
         if not topics:
-            return [], [], 0
+            return [], [], 0, None
 
         cap = self.cfg.news.max_articles_per_topic
         results = await asyncio.gather(
@@ -58,9 +65,11 @@ class DigestService:
             else:
                 empty.append(topic.label)
 
+        per_topic = _trim_to_total(per_topic, self.cfg.news.max_articles_total)
+
         flat = [a for _, arts in per_topic for a in arts]
         if not flat:
-            return [], empty, 0
+            return [], empty, 0, None
 
         summaries = await summarise_articles(self.ai, flat)
         for article, summary in zip(flat, summaries):
@@ -71,13 +80,13 @@ class DigestService:
         )
 
         blocks = [formatting.topic_block(label, arts) for label, arts in per_topic]
-        return blocks, empty, len(flat)
+        return blocks, empty, len(flat), _pick_lead(flat)
 
     # ------------------------------------------------------------- sending
 
     async def send_digest(self, bot, user: User, *, manual: bool = False) -> int:
         """Deliver the digest. Returns how many articles were sent."""
-        blocks, empty, count = await self.collect(user)
+        blocks, empty, count, lead = await self.collect(user)
 
         if not count:
             if manual:
@@ -87,9 +96,13 @@ class DigestService:
             return 0
 
         now = datetime.now(ZoneInfo(user.timezone)) if user.timezone else datetime.now()
+        # The picture rides on the first message only; if the digest ever has
+        # to split, the continuations stay plain.
+        preview = lead.url if (lead and self.cfg.digest.lead_image) else ""
         for message in formatting.digest_messages(blocks, when=now,
                                                   empty_topics=empty):
-            await self._send(bot, user.user_id, message)
+            await self._send(bot, user.user_id, message, preview_url=preview)
+            preview = ""
         log.info("Sent %d articles to %s", count, user.user_id)
         return count
 
@@ -114,13 +127,22 @@ class DigestService:
             body += "\n\n<i>via Google News RSS</i>"
         return f"{header}\n{body}"
 
-    async def _send(self, bot, chat_id: int, text: str) -> None:
+    async def _send(self, bot, chat_id: int, text: str, *,
+                    preview_url: str = "") -> None:
+        # Telegram rejects both preview settings at once, so it is one or the
+        # other: a big picture above the text, or no preview at all.
+        if preview_url:
+            preview = {"link_preview_options": LinkPreviewOptions(
+                url=preview_url, prefer_large_media=True, show_above_text=True,
+            )}
+        else:
+            preview = {"disable_web_page_preview": True}
         try:
             await bot.send_message(
                 chat_id=chat_id,
                 text=text,
                 parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
+                **preview,
             )
         except Forbidden:
             log.warning("User %s has blocked the bot; pausing their digest",
@@ -128,6 +150,66 @@ class DigestService:
             await self.db.set_digest_enabled(chat_id, False)
         except TelegramError as exc:
             log.error("Could not message %s: %s", chat_id, exc)
+
+
+def _pick_lead(articles: list[Article]) -> Article | None:
+    """The article whose picture heads the digest.
+
+    Telegram builds the preview from the page's own og:image, so what matters
+    is landing on a real publisher URL. A story GNews told us has a picture is
+    the safest bet; failing that, any publisher URL is still worth a try,
+    since most news pages carry an og:image even when GNews sent none.
+
+    Google News RSS links are `news.google.com` redirects that preview as
+    nothing at all, so those are never used - on RSS-only days the digest goes
+    out as plain text rather than with an empty grey card on top.
+    """
+    lead = next((a for a in articles if a.image_url), None)
+    if lead is None:
+        lead = next((a for a in articles if _is_publisher_url(a.url)), None)
+    if lead is None:
+        log.info("No previewable article in this digest; sending it without a "
+                 "picture (every link is a Google News redirect)")
+    return lead
+
+
+def _is_publisher_url(url: str) -> bool:
+    try:
+        host = urlsplit(url).hostname or ""
+    except ValueError:
+        return False
+    return bool(host) and not host.endswith("news.google.com")
+
+
+def _trim_to_total(per_topic: list[tuple[str, list[Article]]], total: int):
+    """Cap the whole digest at `total` articles, round-robin across topics.
+
+    Taking one from each topic in turn (rather than filling the first topic
+    to the brim) means every topic still gets a look-in when the cap bites.
+    Articles dropped here are never marked as sent, so they can surface in a
+    later digest.
+    """
+    if total <= 0:
+        return per_topic
+
+    kept: dict[str, list[Article]] = {label: [] for label, _ in per_topic}
+    taken = 0
+    depth = 0
+    while taken < total:
+        placed = False
+        for label, articles in per_topic:
+            if depth >= len(articles):
+                continue
+            kept[label].append(articles[depth])
+            placed = True
+            taken += 1
+            if taken >= total:
+                break
+        if not placed:
+            break
+        depth += 1
+
+    return [(label, kept[label]) for label, _ in per_topic if kept[label]]
 
 
 def _nothing_new_text(empty_topics: list[str]) -> str:

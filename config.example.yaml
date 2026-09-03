@@ -30,6 +30,9 @@ news:
   country: us
   lookback_hours: 24
   max_articles_per_topic: 5
+  # Ceiling across all topics for one digest - picked round-robin so every
+  # topic gets a look-in. Keeps the digest to a single Telegram message.
+  max_articles_total: 6
   gnews:
     api_key: ${GNEWS_API_KEY}
     daily_quota: 100        # free tier; RSS takes over once this is spent
@@ -40,6 +43,10 @@ digest:
   default_time: "08:00"     # used until a user picks their own
   # Skip sending anything when no topic turned up news
   skip_when_empty: false
+  # Show the lead article's picture above the digest. Only works when the
+  # article came from GNews (Google News RSS carries no images), so on
+  # RSS-only days the digest is quietly text as before.
+  lead_image: true
 
 database:
   path: ./data/newsbot.db

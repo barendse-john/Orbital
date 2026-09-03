@@ -42,6 +42,8 @@ class Article:
     published_at: datetime | None = None
     description: str = ""
     summary: str = ""
+    # Only GNews hands us one; Google News RSS has no images.
+    image_url: str = ""
     key: str = field(default="", repr=False)
 
     def __post_init__(self) -> None:
@@ -49,5 +51,8 @@ class Article:
         self.url = clean_url(self.url or "")
         self.description = re.sub(r"<[^>]+>", " ", self.description or "")
         self.description = re.sub(r"\s+", " ", self.description).strip()
+        self.image_url = (self.image_url or "").strip()
+        if not self.image_url.startswith(("http://", "https://")):
+            self.image_url = ""
         if not self.key:
             self.key = article_key(self.title)

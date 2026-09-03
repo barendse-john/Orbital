@@ -14,7 +14,7 @@ news source and the model you choose.
 | | |
 |---|---|
 | **Understands plain English** | *"i like Manchester United"* saves a topic. *"any updates on Starship?"* runs a one-off search. *"send it at 7am"* moves your digest. |
-| **Daily digest** | One combined message at a time you pick, in your own timezone. Headline + link + a one-line summary per article. |
+| **Daily digest** | One short message at a time you pick, in your own timezone. Six articles at most, picked round-robin so every topic gets a look-in. Headline + link + a one-line summary per article, with the lead story's picture above it. |
 | **Per-person setup** | Whitelisted friends each get their own topics, their own digest time, their own timezone. |
 | **Never repeats itself** | An article you've already been sent won't come back, even if a different source or a second topic turns it up. |
 | **Two news sources** | GNews API while the free 100/day allowance lasts, then Google News RSS - free, unlimited, no key. |

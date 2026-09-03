@@ -71,6 +71,7 @@ class GNewsClient:
                     source=(item.get("source") or {}).get("name", ""),
                     published_at=_parse_dt(item.get("publishedAt")),
                     description=item.get("description") or "",
+                    image_url=item.get("image") or "",
                 )
             )
         return [a for a in articles if a.title and a.url]

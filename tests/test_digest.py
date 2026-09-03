@@ -40,9 +40,11 @@ class StubAI(AIBackend):
 class StubBot:
     def __init__(self):
         self.messages = []
+        self.kwargs = []
 
     async def send_message(self, chat_id, text, **kwargs):
         self.messages.append((chat_id, text))
+        self.kwargs.append(kwargs)
 
 
 class StubSource:
@@ -74,8 +76,10 @@ class DigestTests(unittest.IsolatedAsyncioTestCase):
         self.fetcher = NewsFetcher(self.cfg.news, self.db)
         self.fetcher.rss = StubSource([
             Article(title="United sign a striker", url="https://a/1", source="BBC"),
-            Article(title="United draw at home", url="https://a/2", source="Sky"),
-            Article(title="Rocket launch delayed", url="https://b/1", source="NYT"),
+            Article(title="United draw at home", url="https://a/2", source="Sky",
+                    image_url="https://img/2.jpg"),
+            Article(title="Rocket launch delayed", url="https://b/1", source="NYT",
+                    image_url="https://img/3.jpg"),
         ])
         self.ai = StubAI()
         self.digest = DigestService(self.db, self.fetcher, self.ai, self.cfg)
@@ -101,6 +105,26 @@ class DigestTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Rockets", body)
         self.assertIn("United sign a striker", body)
         self.assertIn("Summary 1.", body)
+
+    async def test_total_cap_holds_and_spreads_across_topics(self):
+        self.cfg.news.max_articles_total = 2
+        bot = StubBot()
+        sent = await self.digest.send_digest(bot, self.user)
+        self.assertEqual(sent, 2)
+        self.assertEqual(len(bot.messages), 1)
+        body = bot.messages[0][1]
+        # Round-robin: one from each topic, not both from the first.
+        self.assertIn("United sign a striker", body)
+        self.assertIn("Rocket launch delayed", body)
+        self.assertNotIn("United draw at home", body)
+
+    async def test_articles_cut_by_the_cap_come_back_next_time(self):
+        self.cfg.news.max_articles_total = 2
+        bot = StubBot()
+        await self.digest.send_digest(bot, self.user)
+        second = await self.digest.send_digest(bot, self.user)
+        self.assertEqual(second, 1)
+        self.assertIn("United draw at home", bot.messages[-1][1])
 
     async def test_articles_are_never_sent_twice(self):
         bot = StubBot()
@@ -129,6 +153,45 @@ class DigestTests(unittest.IsolatedAsyncioTestCase):
         bot = StubBot()
         sent = await self.digest.send_digest(bot, self.user)
         self.assertEqual(sent, 1)  # only the rocket story is left
+
+    async def test_lead_picture_heads_the_message(self):
+        bot = StubBot()
+        await self.digest.send_digest(bot, self.user)
+        opts = bot.kwargs[0].get("link_preview_options")
+        self.assertIsNotNone(opts)
+        # First article with a known picture wins, not simply the first article.
+        self.assertEqual(opts.url, "https://a/2")
+        self.assertTrue(opts.show_above_text)
+        self.assertNotIn("disable_web_page_preview", bot.kwargs[0])
+
+    async def test_a_publisher_url_is_tried_even_with_no_known_picture(self):
+        # GNews sometimes sends no image; the page usually still has an
+        # og:image, so a real publisher link is worth previewing.
+        self.fetcher.rss.articles = [
+            Article(title="United draw at home", url="https://sky.com/2",
+                    source="Sky"),
+        ]
+        bot = StubBot()
+        await self.digest.send_digest(bot, self.user)
+        self.assertEqual(
+            bot.kwargs[0]["link_preview_options"].url, "https://sky.com/2"
+        )
+
+    async def test_google_news_redirects_are_never_previewed(self):
+        self.fetcher.rss.articles = [
+            Article(title="United draw at home", source="Sky",
+                    url="https://news.google.com/rss/articles/CBMiabc"),
+        ]
+        bot = StubBot()
+        await self.digest.send_digest(bot, self.user)
+        self.assertNotIn("link_preview_options", bot.kwargs[0])
+        self.assertTrue(bot.kwargs[0]["disable_web_page_preview"])
+
+    async def test_lead_picture_can_be_switched_off(self):
+        self.cfg.digest.lead_image = False
+        bot = StubBot()
+        await self.digest.send_digest(bot, self.user)
+        self.assertNotIn("link_preview_options", bot.kwargs[0])
 
     async def test_no_topics_prompts_the_user(self):
         await self.db.clear_topics(7)

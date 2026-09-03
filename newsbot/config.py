@@ -79,6 +79,8 @@ class NewsConfig:
     country: str = "us"
     lookback_hours: int = 24
     max_articles_per_topic: int = 5
+    # Hard ceiling across every topic, so one digest stays one message.
+    max_articles_total: int = 6
     gnews: GNewsConfig = field(default_factory=GNewsConfig)
     rss_enabled: bool = True
 
@@ -87,6 +89,8 @@ class NewsConfig:
 class DigestConfig:
     default_time: str = "08:00"
     skip_when_empty: bool = False
+    # Show the lead article's picture above the digest text.
+    lead_image: bool = True
 
 
 @dataclass
@@ -148,6 +152,7 @@ class Config:
                 country=str(news.get("country") or "us"),
                 lookback_hours=int(news.get("lookback_hours") or 24),
                 max_articles_per_topic=int(news.get("max_articles_per_topic") or 5),
+                max_articles_total=int(news.get("max_articles_total") or 6),
                 gnews=GNewsConfig(
                     api_key=str(gnews.get("api_key") or ""),
                     daily_quota=int(gnews.get("daily_quota") or 100),
@@ -157,6 +162,7 @@ class Config:
             digest=DigestConfig(
                 default_time=str(dig.get("default_time") or "08:00"),
                 skip_when_empty=bool(dig.get("skip_when_empty", False)),
+                lead_image=bool(dig.get("lead_image", True)),
             ),
             database_path=Path(str(db.get("path") or "./data/newsbot.db")),
             log_level=str(raw.get("log_level") or "INFO").upper(),

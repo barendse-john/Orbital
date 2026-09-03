@@ -23,6 +23,20 @@ class ArticleTests(unittest.TestCase):
         self.assertNotEqual(article_key("Rocket launches"),
                             article_key("Rocket explodes"))
 
+    def test_only_a_real_image_url_survives(self):
+        self.assertEqual(
+            Article(title="T", url="https://a.com/1",
+                    image_url=" https://a.com/pic.jpg ").image_url,
+            "https://a.com/pic.jpg",
+        )
+        # GNews leaves the field out, or sends a relative path, often enough
+        # that anything unusable has to be treated as "no picture".
+        for junk in ("", None, "None", "/img/pic.jpg"):
+            self.assertEqual(
+                Article(title="T", url="https://a.com/1", image_url=junk).image_url,
+                "",
+            )
+
     def test_tracking_parameters_are_stripped(self):
         self.assertEqual(
             clean_url("https://a.com/x?utm_source=twitter&id=7#frag"),
