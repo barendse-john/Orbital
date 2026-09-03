@@ -3,6 +3,10 @@
 Order of preference: GNews while the daily allowance lasts, then Google News
 RSS. If GNews errors for any other reason the request is handed back to the
 quota counter and RSS answers instead, so a bad API day never costs a digest.
+
+Note the two GNews limits are different things: 403 means the day's 100
+requests are gone and RSS takes over until midnight UTC, while 429 only means
+too many requests in one second - it costs nothing but that one query.
 """
 
 from __future__ import annotations
@@ -11,7 +15,8 @@ import logging
 
 from ..config import NewsConfig
 from ..db import Database
-from .gnews import GNewsClient, GNewsError, GNewsQuotaExceeded
+from .gnews import (GNewsClient, GNewsError, GNewsQuotaExceeded,
+                    GNewsRateLimited)
 from .models import Article
 from .rss import GoogleNewsRSS, RSSError
 
@@ -23,7 +28,8 @@ class NewsFetcher:
         self.cfg = cfg
         self.db = db
         self.gnews = GNewsClient(
-            cfg.gnews.api_key, language=cfg.language, country=cfg.country
+            cfg.gnews.api_key, language=cfg.language, country=cfg.country,
+            requests_per_second=cfg.gnews.requests_per_second,
         )
         self.rss = (
             GoogleNewsRSS(language=cfg.language, country=cfg.country)
@@ -51,6 +57,11 @@ class NewsFetcher:
                 except GNewsQuotaExceeded as exc:
                     log.warning("%s - switching to RSS for the rest of today", exc)
                     await self.db.exhaust_gnews_today(self.cfg.gnews.daily_quota)
+                except GNewsRateLimited as exc:
+                    # Only a burst, never the daily allowance: give the
+                    # request back and let RSS answer this one query.
+                    log.warning("%s - RSS answers this one", exc)
+                    await self.db.release_gnews_call()
                 except GNewsError as exc:
                     log.warning("GNews failed (%s) - falling back to RSS", exc)
                     await self.db.release_gnews_call()

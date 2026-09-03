@@ -36,6 +36,9 @@ news:
   gnews:
     api_key: ${GNEWS_API_KEY}
     daily_quota: 100        # free tier; RSS takes over once this is spent
+    # A digest searches every topic at once, so request starts are spaced to
+    # stay inside this. The free plan allows 1/s - raise it only if you pay.
+    requests_per_second: 1
   rss:
     enabled: true           # Google News RSS: free, no key, no quota
 

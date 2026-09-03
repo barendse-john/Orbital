@@ -145,3 +145,69 @@ class FallbackTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GNewsLimitTests(unittest.IsolatedAsyncioTestCase):
+    """403 and 429 mean very different things and must not be conflated."""
+
+    def _client(self, responses, *, requests_per_second=1000.0):
+        import httpx
+        from newsbot.news.gnews import GNewsClient
+
+        self.starts = []
+        queue = list(responses)
+
+        def handler(request):
+            import time
+            self.starts.append(time.monotonic())
+            return queue.pop(0) if len(queue) > 1 else queue[0]
+
+        client = GNewsClient("key", requests_per_second=requests_per_second)
+        client._client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        )
+        return client
+
+    async def test_403_is_the_daily_quota(self):
+        import httpx
+        client = self._client([httpx.Response(403, text="quota")])
+        with self.assertRaises(GNewsQuotaExceeded):
+            await client.search("x")
+        await client.close()
+
+    async def test_429_is_a_rate_limit_not_the_quota(self):
+        import httpx
+        from newsbot.news.gnews import GNewsRateLimited
+        client = self._client([httpx.Response(429, text="slow down")])
+        with self.assertRaises(GNewsRateLimited) as caught:
+            await client.search("x")
+        # Subclassing GNewsError keeps the generic fallback working, but it
+        # must never be caught as a quota error.
+        self.assertNotIsInstance(caught.exception, GNewsQuotaExceeded)
+        self.assertEqual(len(self.starts), 2)  # one retry
+        await client.close()
+
+    async def test_a_burst_that_clears_on_retry_succeeds(self):
+        import httpx
+        client = self._client([
+            httpx.Response(429, text="slow down"),
+            httpx.Response(200, json={"articles": [
+                {"title": "T", "url": "https://a.com/1",
+                 "source": {"name": "BBC"}, "image": "https://a.com/p.jpg"},
+            ]}),
+        ])
+        found = await client.search("x")
+        self.assertEqual(found[0].image_url, "https://a.com/p.jpg")
+        await client.close()
+
+    async def test_concurrent_searches_are_spaced_out(self):
+        import asyncio
+        import httpx
+        client = self._client([httpx.Response(200, json={"articles": []})],
+                              requests_per_second=20.0)
+        await asyncio.gather(*(client.search(q) for q in "abcd"))
+        gaps = [b - a for a, b in zip(self.starts, self.starts[1:])]
+        self.assertEqual(len(self.starts), 4)
+        # A digest fires every topic at once; without spacing GNews 429s them.
+        self.assertTrue(all(g >= 0.04 for g in gaps), gaps)
+        await client.close()

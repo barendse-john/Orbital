@@ -71,6 +71,8 @@ class AIConfig:
 class GNewsConfig:
     api_key: str = ""
     daily_quota: int = 100
+    # Free plan allows 1/s; paid plans 10/s.
+    requests_per_second: float = 1.0
 
 
 @dataclass
@@ -156,6 +158,8 @@ class Config:
                 gnews=GNewsConfig(
                     api_key=str(gnews.get("api_key") or ""),
                     daily_quota=int(gnews.get("daily_quota") or 100),
+                    requests_per_second=float(
+                        gnews.get("requests_per_second") or 1.0),
                 ),
                 rss_enabled=bool(rss.get("enabled", True)),
             ),

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -22,12 +24,33 @@ class GNewsQuotaExceeded(GNewsError):
     """Daily request allowance is spent - fall back to RSS."""
 
 
+class GNewsRateLimited(GNewsError):
+    """Too many requests per second. Says nothing about the daily allowance."""
+
+
 class GNewsClient:
-    def __init__(self, api_key: str, language: str = "en", country: str = "us"):
+    def __init__(self, api_key: str, language: str = "en", country: str = "us",
+                 requests_per_second: float = 1.0):
         self.api_key = api_key
         self.language = language
         self.country = country
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=10.0))
+        # The free plan allows one request a second, and a digest searches
+        # every topic at once - so starts have to be spaced or the whole
+        # batch comes back 429.
+        self._min_gap = 1.0 / requests_per_second if requests_per_second > 0 else 0.0
+        self._gate = asyncio.Lock()
+        self._next_slot = 0.0
+
+    async def _wait_turn(self) -> None:
+        """Hold each request back until its slot in the per-second budget."""
+        if not self._min_gap:
+            return
+        async with self._gate:
+            wait = self._next_slot - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._next_slot = time.monotonic() + self._min_gap
 
     @property
     def enabled(self) -> bool:
@@ -50,15 +73,23 @@ class GNewsClient:
             "apikey": self.api_key,
         }
 
-        try:
-            resp = await self._client.get(SEARCH_URL, params=params)
-        except httpx.HTTPError as exc:
-            raise GNewsError(f"GNews request failed: {exc}") from exc
+        # One retry: a 429 is usually a burst that a moment's wait clears.
+        for attempt in (1, 2):
+            await self._wait_turn()
+            try:
+                resp = await self._client.get(SEARCH_URL, params=params)
+            except httpx.HTTPError as exc:
+                raise GNewsError(f"GNews request failed: {exc}") from exc
+            if resp.status_code != 429 or attempt == 2:
+                break
+            log.debug("GNews rate limit hit on %r; retrying once", query)
 
-        if resp.status_code in (403, 429):
-            raise GNewsQuotaExceeded(
-                f"GNews quota or plan limit reached ({resp.status_code})"
-            )
+        # 403 is the daily allowance; 429 is only the per-second rate limit,
+        # so the two must not be confused - one costs the rest of the day.
+        if resp.status_code == 403:
+            raise GNewsQuotaExceeded("GNews daily quota spent (403)")
+        if resp.status_code == 429:
+            raise GNewsRateLimited("GNews rate limit (429): too many per second")
         if resp.status_code >= 400:
             raise GNewsError(f"GNews error {resp.status_code}: {resp.text[:200]}")
 
