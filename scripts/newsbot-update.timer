@@ -1,0 +1,12 @@
+# Checks GitHub for new commits every 15 minutes and deploys them
+# automatically. Install alongside newsbot-update.service.
+[Unit]
+Description=Periodically check for newsbot updates
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

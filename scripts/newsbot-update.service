@@ -1,0 +1,12 @@
+# Runs scripts/deploy.sh once. Triggered by newsbot-update.timer, not enabled
+# directly.
+[Unit]
+Description=Pull latest newsbot code and restart if changed
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=john
+WorkingDirectory=/home/john/newsbot
+ExecStart=/home/john/newsbot/scripts/deploy.sh

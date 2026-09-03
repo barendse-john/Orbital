@@ -127,6 +127,50 @@ And the commands, which keep working even if the model is unreachable:
 
 ---
 
+## Keeping the Pi up to date
+
+The Pi's checkout is a git clone of this repo, so pushing a change to GitHub
+doesn't reach it by itself - something on the Pi has to `git pull`.
+`newsbot-update.timer` does that automatically: it checks for new commits
+every 15 minutes and, if there are any, pulls, reinstalls dependencies if
+`requirements.txt` changed, and restarts the service.
+
+**One-time setup on the Pi:**
+
+```bash
+# Let deploy.sh restart the service without asking for a password
+echo "john ALL=(root) NOPASSWD: /usr/bin/systemctl restart newsbot" | \
+  sudo tee /etc/sudoers.d/newsbot-deploy
+sudo chmod 440 /etc/sudoers.d/newsbot-deploy
+
+sudo cp scripts/newsbot-update.service scripts/newsbot-update.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now newsbot-update.timer
+```
+
+Check it's scheduled and see when it last ran:
+
+```bash
+systemctl list-timers newsbot-update.timer
+journalctl -t newsbot-deploy -f
+```
+
+**Deploying by hand** (skip the wait, or check what a pull would do) works the
+same way whether or not the timer is installed:
+
+```bash
+./scripts/deploy.sh
+```
+
+It's quiet when there's nothing new, and only pulls when the Pi is behind
+`origin/main` - `.env`, `config.yaml`, and `data/` are gitignored, so nothing
+you've configured locally is ever touched or overwritten by a pull.
+
+If a deploy ever fails because of local changes on the Pi (`git pull was not
+a fast-forward`), that means something was edited directly on the Pi instead
+of pushed through git - `git status` there to see what, then either commit
+and push it properly or `git stash` it before pulling again.
+
 ## Adding friends
 
 1. They message the bot; it replies with their Telegram ID.
