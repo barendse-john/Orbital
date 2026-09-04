@@ -8,6 +8,7 @@ import logging
 import sys
 
 from telegram import BotCommand
+from telegram.error import BadRequest, NetworkError
 from telegram.ext import Application, ApplicationBuilder
 from telegram.request import HTTPXRequest
 
@@ -20,6 +21,34 @@ from .news import NewsFetcher
 from .scheduler import DigestScheduler
 
 log = logging.getLogger("newsbot")
+
+
+class RetryingRequest(HTTPXRequest):
+    """Retry a Telegram call that failed on the network, not on its answer.
+
+    The Pi's line drops the occasional request, and a lost send is what the
+    user experiences as the bot ignoring them. Only NetworkError (which
+    TimedOut inherits) is retried - a BadRequest or Forbidden is an answer,
+    and asking again would just get the same one.
+
+    The trade-off is honest: if a send actually arrived and only its response
+    was lost, the retry duplicates the message. Telegram offers no idempotency
+    key, and a rare doubled message beats a regularly missing one.
+    """
+
+    RETRY_DELAYS = (0.5, 2.0)
+
+    async def do_request(self, *args, **kwargs):
+        for delay in self.RETRY_DELAYS:
+            try:
+                return await super().do_request(*args, **kwargs)
+            except BadRequest:
+                raise
+            except NetworkError as exc:
+                log.warning("Telegram call failed (%s); retrying in %.1fs",
+                            exc, delay)
+                await asyncio.sleep(delay)
+        return await super().do_request(*args, **kwargs)
 
 # Telegram's command menu. A command still works if it is missing here, but
 # nobody discovers it - /retune, /requests and /users were invisible for
@@ -86,8 +115,8 @@ def build_application(cfg: Config) -> Application:
     # PTB's defaults are about five seconds. A domestic connection to
     # Telegram is not reliably that quick, and a timeout here surfaces as the
     # bot ignoring you.
-    request = HTTPXRequest(connect_timeout=15.0, read_timeout=25.0,
-                           write_timeout=25.0, pool_timeout=5.0)
+    request = RetryingRequest(connect_timeout=15.0, read_timeout=25.0,
+                              write_timeout=25.0, pool_timeout=5.0)
     getter = HTTPXRequest(connect_timeout=15.0, read_timeout=25.0,
                           write_timeout=25.0, pool_timeout=5.0)
 

@@ -18,7 +18,8 @@ from telegram import (
     Update,
 )
 from telegram.constants import ChatAction, ParseMode
-from telegram.error import TelegramError
+import httpx
+from telegram.error import BadRequest, NetworkError, TelegramError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -1043,11 +1044,21 @@ class BotHandlers:
     # --------------------------------------------------------------- errors
 
     async def on_error(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-        log.exception("Handler error", exc_info=context.error)
-        if isinstance(update, Update) and update.effective_message:
-            try:
-                await update.effective_message.reply_text(
-                    "Something went wrong on my end - it's logged. Try again?"
-                )
-            except Exception:  # noqa: BLE001
-                pass
+        error = context.error
+        log.exception("Handler error", exc_info=error)
+        if not (isinstance(update, Update) and update.effective_message):
+            return
+        # A dropped connection is worth naming: "something went wrong" sends
+        # someone to the logs for what is usually a blip.
+        # BadRequest subclasses NetworkError in PTB, and is a real bug -
+        # blaming the connection for it would send us looking in the wrong
+        # place.
+        network = (isinstance(error, (NetworkError, httpx.HTTPError))
+                   and not isinstance(error, BadRequest))
+        text = ("I lost my connection for a moment - say that again?"
+                if network
+                else "Something went wrong on my end - it's logged. Try again?")
+        try:
+            await update.effective_message.reply_text(text)
+        except Exception:  # noqa: BLE001
+            pass

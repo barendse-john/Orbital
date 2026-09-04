@@ -103,3 +103,61 @@ class RetryTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TelegramRetryTests(unittest.IsolatedAsyncioTestCase):
+    """A dropped Telegram send is what looks like the bot ignoring you."""
+
+    def setUp(self):
+        from newsbot.__main__ import RetryingRequest
+
+        RetryingRequest.RETRY_DELAYS = (0.0, 0.0)
+        self.cls = RetryingRequest
+
+    async def test_a_network_failure_is_retried_and_can_succeed(self):
+        from telegram.error import TimedOut
+
+        calls = []
+
+        class Flaky(self.cls):
+            async def do_request(inner, *args, **kwargs):
+                return await self.cls.do_request(inner, *args, **kwargs)
+
+        request = Flaky()
+
+        async def flaky_super(*args, **kwargs):
+            calls.append(1)
+            if len(calls) < 3:
+                raise TimedOut("Timed out")
+            return 200, b'{"ok": true}'
+
+        import newsbot.__main__ as main
+        original = main.HTTPXRequest.do_request
+        main.HTTPXRequest.do_request = flaky_super
+        try:
+            self.assertEqual(await request.do_request("url", None),
+                             (200, b'{"ok": true}'))
+            self.assertEqual(len(calls), 3)
+        finally:
+            main.HTTPXRequest.do_request = original
+
+    async def test_a_bad_request_is_not_retried(self):
+        from telegram.error import BadRequest
+
+        calls = []
+
+        async def always_bad(*args, **kwargs):
+            calls.append(1)
+            raise BadRequest("chat not found")
+
+        import newsbot.__main__ as main
+        original = main.HTTPXRequest.do_request
+        main.HTTPXRequest.do_request = always_bad
+        try:
+            with self.assertRaises(BadRequest):
+                await self.cls().do_request("url", None)
+            # Asking again gets the same answer; only the network is worth
+            # a second attempt.
+            self.assertEqual(len(calls), 1)
+        finally:
+            main.HTTPXRequest.do_request = original
