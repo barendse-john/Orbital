@@ -8,6 +8,7 @@ keeps concurrent writes honest.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sqlite3
 import threading
@@ -49,6 +50,15 @@ CREATE TABLE IF NOT EXISTS pending_topics (
     label    TEXT NOT NULL,
     question TEXT NOT NULL,
     asked_at TEXT NOT NULL
+);
+
+-- An open back-and-forth about the news. Kept in SQLite rather than in
+-- memory so a deploy restart doesn't drop someone mid-conversation.
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    user_id  INTEGER PRIMARY KEY,
+    history  TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    last_at  TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS sent_articles (
@@ -315,6 +325,72 @@ class Database:
             cur = self._write("DELETE FROM topics WHERE user_id = ?", (user_id,))
             return cur.rowcount
         return await asyncio.to_thread(_clear)
+
+    # ------------------------------------------------------------ news chat
+
+    CHAT_MEMORY = 8  # turns kept; enough for "and the other one?"
+
+    async def start_chat(self, user_id: int) -> None:
+        now = _utcnow()
+        await asyncio.to_thread(
+            self._write,
+            """INSERT INTO chat_sessions (user_id, history, started_at, last_at)
+               VALUES (?, '[]', ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET
+                   history = '[]', started_at = excluded.started_at,
+                   last_at = excluded.last_at""",
+            (user_id, now, now),
+        )
+
+    async def get_chat(self, user_id: int, *,
+                       idle_minutes: int = 20) -> list[dict] | None:
+        """The conversation so far, or None once it has gone quiet."""
+        rows = await asyncio.to_thread(
+            self._read,
+            "SELECT history, last_at FROM chat_sessions WHERE user_id = ?",
+            (user_id,),
+        )
+        if not rows:
+            return None
+        try:
+            last = datetime.fromisoformat(rows[0]["last_at"])
+        except ValueError:
+            last = datetime.now(timezone.utc)
+        if datetime.now(timezone.utc) - last > timedelta(minutes=idle_minutes):
+            await self.end_chat(user_id)
+            return None
+        try:
+            history = json.loads(rows[0]["history"])
+        except json.JSONDecodeError:
+            history = []
+        return history if isinstance(history, list) else []
+
+    async def append_chat(self, user_id: int, role: str, text: str) -> None:
+        def _append() -> None:
+            with self._lock:
+                rows = self.conn.execute(
+                    "SELECT history FROM chat_sessions WHERE user_id = ?",
+                    (user_id,),
+                ).fetchall()
+                if not rows:
+                    return
+                try:
+                    history = json.loads(rows[0]["history"])
+                except json.JSONDecodeError:
+                    history = []
+                history.append({"role": role, "text": text})
+                self.conn.execute(
+                    "UPDATE chat_sessions SET history = ?, last_at = ? "
+                    "WHERE user_id = ?",
+                    (json.dumps(history[-self.CHAT_MEMORY:]), _utcnow(), user_id),
+                )
+                self.conn.commit()
+        await asyncio.to_thread(_append)
+
+    async def end_chat(self, user_id: int) -> None:
+        await asyncio.to_thread(
+            self._write, "DELETE FROM chat_sessions WHERE user_id = ?", (user_id,)
+        )
 
     # ------------------------------------------------------------ dedupe
 

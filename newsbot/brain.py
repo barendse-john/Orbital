@@ -43,7 +43,9 @@ Guidance:
 - "what am i following" -> list_topics.
 - "send it at 7am", "make it 19:30" -> set_time.
 - "i'm in Tokyo", "i moved to Lisbon" -> set_timezone.
-- "send me the digest now", "catch me up" -> digest_now.
+- "send me the digest now", "catch me up" -> digest_now. This opens a
+  conversation about the news rather than sending a digest; the digest
+  itself only goes out in the morning.
 - "pause"/"mute" -> pause. "resume"/"unmute" -> resume.
 - Anything else conversational -> chat, with a one-line reply.
 Keep query terms newsworthy: for "i like Manchester United" use
@@ -94,6 +96,38 @@ For each numbered article you receive, write ONE sentence of at most 20 words
 saying what actually happened - concrete facts, no hype, no "this article
 discusses". Reply with a JSON array of strings, one per article, in the same
 order. No other text."""
+
+CHAT_SYSTEM = """You are a news bot having a back-and-forth on Telegram.
+
+Reply with ONE JSON object and nothing else:
+  search  a news search query when answering needs current reporting, else null
+  reply   what to say when you are NOT searching, else null
+  end     true when they are winding the conversation up, else false
+
+Search whenever they ask what is happening, what was said, what the numbers
+are, or anything else that needs today's reporting. Use `reply` only for the
+things a search cannot answer - a clarifying question when you truly cannot
+tell what they mean, or an acknowledgement.
+
+`end` is true for "thanks", "that's all", "bye", "never mind" - anything that
+reads as closing the conversation, even a warm one.
+
+Tone: say the thing and stop. No sign-offs, no "let me know if you need
+anything", no offers of further help. One or two sentences."""
+
+CHAT_ANSWER_SYSTEM = """You answer a question using ONLY the numbered articles
+you are given.
+
+Write two to four sentences of plain prose - what actually happened, the
+numbers, who said it. After a claim, cite the article it came from as [1],
+[2] and so on, matching the numbers you were given. Every article you draw on
+gets a marker; never invent a number you were not given, and never write a URL.
+
+If the articles do not answer the question, say so plainly in one sentence
+instead of padding.
+
+Tone: say the thing and stop. No sign-offs, no "let me know if you need
+anything", no unprompted follow-up questions."""
 
 TIMEZONE_SYSTEM = """The user names a place. Reply with the matching IANA
 timezone identifier and nothing else, e.g. "Europe/Amsterdam". If the place is
@@ -445,6 +479,130 @@ async def resolve_timezone(ai: AIBackend | None, place: str) -> str | None:
         return None
     answer = answer.strip().strip('".')
     return answer if valid_timezone(answer) else None
+
+
+# --------------------------------------------------------------------------
+# The news chat
+# --------------------------------------------------------------------------
+
+_GOODBYE_WORDS = re.compile(
+    r"\b(?:thanks?|thank you|ta|cheers|thx|bye|goodbye|good ?night|nite|"
+    r"never ?mind|nvm|no more|nothing else|that'?s (?:all|it|enough)|"
+    r"i'?m done|done|stop|that'?ll do|that will do)\b",
+    re.I,
+)
+
+
+@dataclass
+class ChatTurn:
+    search: str | None = None
+    reply: str | None = None
+    end: bool = False
+
+
+def is_goodbye(text: str) -> bool:
+    """Closing words, recognised without a model call.
+
+    Deliberately narrow: only a short, non-questioning message counts, so
+    "thanks to whom?" and "is that deal done?" carry on the conversation
+    while "nah I'm done" ends it.
+    """
+    stripped = text.strip()
+    if not stripped or stripped.endswith("?"):
+        return False
+    words = re.findall(r"[a-z']+", stripped.lower())
+    if not words or len(words) > 6:
+        return False
+    return bool(_GOODBYE_WORDS.search(stripped))
+
+
+def _history_text(history: list[dict]) -> str:
+    lines = [
+        f"{'Them' if h.get('role') == 'user' else 'You'}: {h.get('text', '')}"
+        for h in (history or [])
+    ]
+    return "\n".join(lines)
+
+
+async def plan_chat_turn(
+    ai: AIBackend | None, history: list[dict], message: str,
+) -> ChatTurn:
+    """Decide whether this message needs a search, an answer, or an ending."""
+    if is_goodbye(message):
+        return ChatTurn(end=True)
+    if ai is None:
+        # No model: treat whatever they said as the search terms.
+        return ChatTurn(search=message.strip())
+
+    prompt = message.strip()
+    if past := _history_text(history):
+        prompt = f"So far:\n{past}\n\nThem: {message.strip()}"
+    try:
+        raw = await ai.complete(CHAT_SYSTEM, prompt, max_tokens=250)
+    except AIError as exc:
+        log.warning("Chat planning unavailable (%s); searching instead", exc)
+        return ChatTurn(search=message.strip())
+
+    data = extract_json(raw)
+    if not isinstance(data, dict):
+        log.warning("Unparseable chat turn: %s", raw[:200])
+        return ChatTurn(search=message.strip())
+    search = _clean(data.get("search"))
+    reply = _clean(data.get("reply"))
+    end = bool(data.get("end"))
+    if not (search or reply or end):
+        return ChatTurn(search=message.strip())
+    return ChatTurn(search=search, reply=reply, end=end)
+
+
+_CITATION_RE = re.compile(r"\s*\[(\d{1,2})\]")
+
+
+def link_citations(text: str, articles: list, *, escape=None) -> str:
+    """Turn the model's [1] markers into real links.
+
+    The model never writes a URL - it writes a number, and the number is
+    looked up here. That way a citation can be wrong about which article it
+    points at, but it can never point somewhere that does not exist.
+    """
+    escape = escape or (lambda t: t)
+    body = escape(text)
+
+    def swap(match: re.Match) -> str:
+        index = int(match.group(1)) - 1
+        if not 0 <= index < len(articles):
+            return ""
+        article = articles[index]
+        source = (getattr(article, "source", "") or "").strip() or "source"
+        return f' <a href="{escape(article.url)}">{escape(source)}</a>'
+
+    return _CITATION_RE.sub(swap, body).strip()
+
+
+async def write_chat_answer(
+    ai: AIBackend | None, history: list[dict], message: str, articles: list,
+) -> str | None:
+    """Prose answering the question, with [n] markers still in place."""
+    if ai is None or not articles:
+        return None
+    numbered = []
+    for i, a in enumerate(articles, 1):
+        blurb = re.sub(r"\s+", " ", (getattr(a, "description", "") or ""))[:400]
+        numbered.append(
+            f"{i}. {a.title}\n   source: {a.source}\n   blurb: {blurb}"
+        )
+    prompt = message.strip()
+    if past := _history_text(history):
+        prompt = f"So far:\n{past}\n\nThem: {message.strip()}"
+    prompt += "\n\nArticles:\n" + "\n".join(numbered)
+
+    try:
+        return (await ai.complete(
+            CHAT_ANSWER_SYSTEM, prompt, max_tokens=400
+        )).strip()
+    except AIError as exc:
+        log.warning("Chat answer unavailable (%s); listing the articles", exc)
+        return None
 
 
 # --------------------------------------------------------------------------

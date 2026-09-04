@@ -103,20 +103,21 @@ class DigestTests(unittest.IsolatedAsyncioTestCase):
         body = bot.messages[0][1]
         self.assertIn("Manchester United", body)
         self.assertIn("Rockets", body)
-        self.assertIn("United sign a striker", body)
+        self.assertIn("https://a/1", body)
         self.assertIn("Summary 1.", body)
 
-    async def test_total_cap_holds_and_spreads_across_topics(self):
+    async def test_the_cap_keeps_the_best_story_of_each_topic(self):
         self.cfg.news.max_articles_total = 2
         bot = StubBot()
         sent = await self.digest.send_digest(bot, self.user)
         self.assertEqual(sent, 2)
         self.assertEqual(len(bot.messages), 1)
         body = bot.messages[0][1]
-        # Round-robin: one from each topic, not both from the first.
-        self.assertIn("United sign a striker", body)
-        self.assertIn("Rocket launch delayed", body)
-        self.assertNotIn("United draw at home", body)
+        self.assertIn("Manchester United", body)
+        self.assertIn("Rockets", body)
+        # BBC outranks Sky, so the weaker United story is the one dropped.
+        self.assertIn("https://a/1", body)
+        self.assertNotIn("https://a/2", body)
 
     async def test_articles_cut_by_the_cap_come_back_next_time(self):
         self.cfg.news.max_articles_total = 2
@@ -124,7 +125,7 @@ class DigestTests(unittest.IsolatedAsyncioTestCase):
         await self.digest.send_digest(bot, self.user)
         second = await self.digest.send_digest(bot, self.user)
         self.assertEqual(second, 1)
-        self.assertIn("United draw at home", bot.messages[-1][1])
+        self.assertIn("https://a/2", bot.messages[-1][1])
 
     async def test_articles_are_never_sent_twice(self):
         bot = StubBot()
@@ -138,18 +139,18 @@ class DigestTests(unittest.IsolatedAsyncioTestCase):
         bot = StubBot()
         sent = await self.digest.send_digest(bot, await self.db.get_user(7))
         self.assertEqual(sent, 3)
-        self.assertEqual(bot.messages[0][1].count("United sign a striker"), 1)
+        self.assertEqual(bot.messages[0][1].count("https://a/1"), 1)
 
     async def test_digest_still_goes_out_when_the_model_is_down(self):
         self.digest.ai = StubAI(fail=True)
         bot = StubBot()
         sent = await self.digest.send_digest(bot, self.user)
         self.assertEqual(sent, 3)
-        self.assertIn("United sign a striker", bot.messages[0][1])
+        self.assertIn("United sign a striker", bot.messages[0][1])  # no summary
 
     async def test_search_reply_marks_results_as_seen(self):
         body = await self.digest.search_reply(7, "United")
-        self.assertIn("United sign a striker", body)
+        self.assertIn("https://a/1", body)
         bot = StubBot()
         sent = await self.digest.send_digest(bot, self.user)
         self.assertEqual(sent, 1)  # only the rocket story is left

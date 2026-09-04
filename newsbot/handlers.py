@@ -24,11 +24,13 @@ from telegram.ext import (
 )
 
 from . import timezones
-from .brain import (Intent, TopicPlan, normalise_time, parse_intent,
-                    plain_query, plan_topic, resolve_timezone, valid_timezone)
+from .brain import (Intent, TopicPlan, link_citations, normalise_time,
+                    parse_intent, plain_query, plan_chat_turn, plan_topic,
+                    resolve_timezone, summarise_articles, valid_timezone,
+                    write_chat_answer)
 from .db import Database
 from .digest import DigestService
-from .formatting import esc
+from .formatting import article_line, esc
 from .news import NewsFetcher
 from .scheduler import DigestScheduler
 
@@ -38,9 +40,12 @@ STAGE = "onboarding_stage"
 STAGE_TZ = "await_timezone"
 STAGE_TIME = "await_time"
 
-HELP_TEXT = """<b>Just talk to me normally:</b>
+HELP_TEXT = """<b>Your digest arrives once a day</b> - the best of the last 24 hours on
+your topics, ranked by how widely a story was reported.
+
+<b>The rest of the time, just talk to me:</b>
+• <i>"what's the market saying about Nvidia?"</i> - I'll go and read
 • <i>"i like Manchester United"</i> - saves a topic
-• <i>"search up news about satellites"</i> - one-off search
 • <i>"stop sending me tennis"</i> - drops a topic
 • <i>"send the digest at 7am"</i> - changes your delivery time
 
@@ -50,7 +55,6 @@ HELP_TEXT = """<b>Just talk to me normally:</b>
 /remove &lt;topic&gt; - stop following it
 /retune &lt;topic&gt; - narrow what a topic searches for
 /search &lt;query&gt; - search right now
-/digest - send today's digest immediately
 /time &lt;HH:MM&gt; - set your daily digest time
 /timezone &lt;city&gt; - set your timezone
 /pause and /resume - mute or unmute the daily digest
@@ -291,6 +295,15 @@ class BotHandlers:
                 await self._answer_pending_topic(update, context, pending, text)
                 return
 
+        # Mid-conversation: keep answering until they wind it up, unless
+        # they typed a command, which is them changing the subject.
+        chat = await self.db.get_chat(tg.id)
+        if chat is not None:
+            if not text.startswith("/"):
+                await self._continue_chat(update, context, chat, text)
+                return
+            await self.db.end_chat(tg.id)
+
         await context.bot.send_chat_action(tg.id, ChatAction.TYPING)
         topics = await self.db.list_topics(tg.id)
         intent = await parse_intent(self.ai, text, topics=[t.label for t in topics])
@@ -320,7 +333,7 @@ class BotHandlers:
         elif action == "set_timezone" and intent.timezone:
             await self._accept_timezone(update, context, intent.timezone)
         elif action == "digest_now":
-            await self._send_digest_now(update, context)
+            await self._start_chat(update, context)
         elif action == "pause":
             await self.db.set_digest_enabled(user_id, False)
             self.scheduler.cancel(user_id)
@@ -406,9 +419,8 @@ class BotHandlers:
             return
         note = reply or f"Following <b>{esc(label)}</b>."
         count = len(await self.db.list_topics(user_id))
-        # The /digest hint is worth saying once, on the first topic - after
-        # that it's noise on every single add.
-        hint = "\nSend /digest whenever you want it early." if count == 1 else ""
+        hint = ("\nYour digest lands each morning; ask me anything before "
+                "then.") if count == 1 else ""
         await update.effective_message.reply_text(
             f"\u2705 {note} ({count} topic{'s' if count != 1 else ''})"
             f"{shown}{hint}",
@@ -465,6 +477,58 @@ class BotHandlers:
             else f"Time saved as {esc(hhmm)} (digest is paused - /resume).",
             parse_mode=ParseMode.HTML,
         )
+
+    async def _start_chat(self, update: Update, context) -> None:
+        """A digest on demand would be thin, so offer the real thing instead."""
+        await self.db.start_chat(update.effective_user.id)
+        await update.effective_message.reply_text(
+            "A digest on the spot would be thin - the morning one is built "
+            "out of a whole day of news. What do you want to know about?"
+        )
+
+    async def _continue_chat(self, update: Update, context,
+                             history: list[dict], text: str) -> None:
+        user_id = update.effective_user.id
+        await context.bot.send_chat_action(user_id, ChatAction.TYPING)
+
+        turn = await plan_chat_turn(self.ai, history, text)
+        if turn.end:
+            await self.db.end_chat(user_id)
+            await update.effective_message.reply_text("Alright.")
+            return
+
+        await self.db.append_chat(user_id, "user", text)
+        if turn.search:
+            body, plain = await self._answer_from_news(history, text, turn.search)
+        else:
+            body = plain = turn.reply or "What about it?"
+
+        await self.db.append_chat(user_id, "bot", plain)
+        await update.effective_message.reply_text(
+            body, parse_mode=ParseMode.HTML, disable_web_page_preview=True
+        )
+
+    async def _answer_from_news(self, history: list[dict], text: str,
+                                query: str) -> tuple[str, str]:
+        """(message to send, plain version for the transcript)."""
+        articles, _source = await self.fetcher.search(query, limit=4)
+        if not articles:
+            miss = (f"Nothing in the last {self.cfg.news.lookback_hours}h on "
+                    f"<b>{esc(query)}</b>.")
+            return miss, f"nothing found on {query}"
+
+        summaries = await summarise_articles(self.ai, articles)
+        for article, summary in zip(articles, summaries):
+            article.summary = summary
+
+        # Deliberately not marked as sent: a story worth discussing now is
+        # still worth putting in tomorrow's digest.
+        written = await write_chat_answer(self.ai, history, text, articles)
+        if written:
+            return link_citations(written, articles, escape=esc), written
+        # No model: the articles themselves are still an answer.
+        listed = "\n".join(article_line(a) for a in articles)
+        return listed, listed
 
     async def _send_digest_now(self, update: Update, context) -> None:
         user = await self.db.get_user(update.effective_user.id)
@@ -570,8 +634,16 @@ class BotHandlers:
         await self._run_search(update, context, query)
 
     async def cmd_digest(self, update: Update, context) -> None:
-        if await self._ready_user(update, context):
-            await self._send_digest_now(update, context)
+        """Admin-only: the same ranked digest the morning run sends."""
+        if not await self._ready_user(update, context):
+            return
+        if not await self._is_admin(update.effective_user.id):
+            await update.effective_message.reply_text(
+                "Your digest lands each morning. Ask me about anything in "
+                "the meantime."
+            )
+            return
+        await self._send_digest_now(update, context)
 
     async def cmd_time(self, update: Update, context) -> None:
         if not await self._ready_user(update, context):

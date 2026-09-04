@@ -15,18 +15,29 @@ def _article(title="Headline", url="https://example.com/a", source="BBC",
 
 
 class FormattingTests(unittest.TestCase):
-    def test_article_line_has_link_summary_and_source(self):
+    def test_the_story_is_the_summary_and_the_source_is_the_link(self):
         line = article_line(_article())
-        self.assertIn('<a href="https://example.com/a">Headline</a>', line)
-        self.assertIn("<i>Something happened.</i>", line)
-        self.assertIn("BBC", line)
+        self.assertIn("Something happened.", line)
+        self.assertIn('<a href="https://example.com/a">BBC</a>', line)
+        # The headline is not repeated - the summary already said it.
+        self.assertNotIn("Headline", line)
 
-    def test_html_in_titles_is_escaped(self):
-        line = article_line(_article(title="Ben & Jerry's <b>win</b>"))
+    def test_the_headline_stands_in_when_there_is_no_summary(self):
+        line = article_line(_article(summary=""))
+        self.assertIn("Headline", line)
+        self.assertIn('<a href="https://example.com/a">BBC</a>', line)
+
+    def test_html_is_escaped(self):
+        line = article_line(_article(summary="Ben & Jerry's <b>win</b>"))
         self.assertIn("Ben &amp; Jerry's &lt;b&gt;win&lt;/b&gt;", line)
 
+    def test_an_article_with_no_source_still_gets_a_link(self):
+        self.assertIn('<a href="https://example.com/a">link</a>',
+                      article_line(_article(source="")))
+
     def test_topic_block_lists_every_article(self):
-        block = topic_block("Space", [_article(title="One"), _article(title="Two")])
+        block = topic_block("Space", [_article(summary="One"),
+                                      _article(summary="Two")])
         self.assertTrue(block.startswith("<b>Space</b>"))
         self.assertIn("One", block)
         self.assertIn("Two", block)

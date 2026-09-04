@@ -14,14 +14,15 @@ def esc(text: str) -> str:
 
 
 def article_line(article, *, bullet: str = "•") -> str:
-    line = f'{bullet} <a href="{esc(article.url)}">{esc(article.title)}</a>'
-    summary = (article.summary or "").strip()
-    if summary:
-        line += f"\n   <i>{esc(summary)}</i>"
-    if article.source:
-        line += f"\n   <i>{esc(article.source)}</i>" if not summary \
-            else f" <i>— {esc(article.source)}</i>"
-    return line
+    """One story as a sentence, with the outlet's name carrying the link.
+
+    The summary is the story; the headline is only the fallback for when
+    summarising was unavailable, because a digest of bare headlines reads as
+    a pile of links rather than as news.
+    """
+    text = (article.summary or "").strip() or (article.title or "").strip()
+    source = (article.source or "").strip() or "link"
+    return f'{bullet} {esc(text)} — <a href="{esc(article.url)}">{esc(source)}</a>'
 
 
 def topic_block(label: str, articles: list) -> str:

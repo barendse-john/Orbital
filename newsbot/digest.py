@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -12,7 +12,7 @@ from telegram import LinkPreviewOptions
 from telegram.constants import ParseMode
 from telegram.error import Forbidden, TelegramError
 
-from . import formatting
+from . import formatting, ranking
 from .brain import summarise_articles
 from .db import Database, User
 from .news import Article, NewsFetcher
@@ -40,14 +40,16 @@ class DigestService:
         if not topics:
             return [], [], 0, None
 
-        cap = self.cfg.news.max_articles_per_topic
+        # Fetch deeper than the digest needs: ranking can only pick the best
+        # of what it was given, so it wants a pool, not a shortlist.
+        pool_size = min(self.cfg.news.max_articles_per_topic * 2, 10)
         results = await asyncio.gather(
-            *(self.fetcher.search_unseen(user.user_id, t.query, limit=cap)
+            *(self.fetcher.search_unseen(user.user_id, t.query, limit=pool_size)
               for t in topics),
             return_exceptions=True,
         )
 
-        per_topic: list[tuple[str, list[Article]]] = []
+        pooled: list[tuple[str, str, list[Article]]] = []
         empty: list[str] = []
         seen_keys: set[str] = set()
         sources: set[str] = set()
@@ -63,15 +65,30 @@ class DigestService:
             fresh = [a for a in articles if a.key not in seen_keys]
             seen_keys.update(a.key for a in fresh)
             if fresh:
-                per_topic.append((topic.label, fresh))
+                pooled.append((topic.label, topic.query, fresh))
             else:
                 empty.append(topic.label)
 
-        per_topic = _trim_to_total(per_topic, self.cfg.news.max_articles_total)
+        ranked = ranking.rank(pooled, now=datetime.now(timezone.utc))
+        top = ranking.take_top(ranked, self.cfg.news.max_articles_total)
+        if not top:
+            return [], empty, 0, None
+
+        per_topic: list[tuple[str, list[Article]]] = []
+        for label, scored in top:
+            for existing_label, arts in per_topic:
+                if existing_label == label:
+                    arts.append(scored.article)
+                    break
+            else:
+                per_topic.append((label, [scored.article]))
+
+        if log.isEnabledFor(logging.DEBUG):
+            for label, scored in top:
+                log.debug("  %5.2f %dx [%s] %s", scored.score, scored.sources,
+                          label, scored.article.title[:70])
 
         flat = [a for _, arts in per_topic for a in arts]
-        if not flat:
-            return [], empty, 0, None
 
         summaries = await summarise_articles(self.ai, flat)
         for article, summary in zip(flat, summaries):
@@ -84,8 +101,9 @@ class DigestService:
         blocks = [formatting.topic_block(label, arts) for label, arts in per_topic]
         lead = _pick_lead(flat)
         # One line that explains any "why no picture?" without guesswork.
-        log.info("Digest for %s: %d articles via %s; lead picture from %s",
-                 user.user_id, len(flat), "+".join(sorted(sources)) or "none",
+        log.info("Digest for %s: %d of %d articles via %s; lead picture from %s",
+                 user.user_id, len(flat), len(ranked),
+                 "+".join(sorted(sources)) or "none",
                  lead.url if lead else "nothing previewable")
         return blocks, empty, len(flat), lead
 
@@ -186,37 +204,6 @@ def _is_publisher_url(url: str) -> bool:
     except ValueError:
         return False
     return bool(host) and not host.endswith("news.google.com")
-
-
-def _trim_to_total(per_topic: list[tuple[str, list[Article]]], total: int):
-    """Cap the whole digest at `total` articles, round-robin across topics.
-
-    Taking one from each topic in turn (rather than filling the first topic
-    to the brim) means every topic still gets a look-in when the cap bites.
-    Articles dropped here are never marked as sent, so they can surface in a
-    later digest.
-    """
-    if total <= 0:
-        return per_topic
-
-    kept: dict[str, list[Article]] = {label: [] for label, _ in per_topic}
-    taken = 0
-    depth = 0
-    while taken < total:
-        placed = False
-        for label, articles in per_topic:
-            if depth >= len(articles):
-                continue
-            kept[label].append(articles[depth])
-            placed = True
-            taken += 1
-            if taken >= total:
-                break
-        if not placed:
-            break
-        depth += 1
-
-    return [(label, kept[label]) for label, _ in per_topic if kept[label]]
 
 
 def _nothing_new_text(empty_topics: list[str]) -> str:
