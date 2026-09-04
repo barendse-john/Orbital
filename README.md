@@ -18,6 +18,7 @@ news source and the model you choose.
 | **Daily digest** | One short message at a time you pick, in your own timezone. The best six stories of the last 24 hours, ranked by how many outlets ran them, how well they match your topic, the source's track record and how late in the day they broke. Each story is a sentence with the outlet's name carrying the link, and the lead story's picture on top. |
 | **A news chat, not a digest on demand** | Ask for a digest mid-afternoon and it says so, then asks what you actually want to know - and answers from real reporting, with the links in the words. It follows up until you say thanks or go quiet. |
 | **Per-person setup** | Whitelisted friends each get their own topics, their own digest time, their own timezone. |
+| **Friends ask, you tap** | A stranger who messages the bot gets turned away politely, and you get their name, username and first message with Approve / Deny buttons. One person, one request, however many times they message. `/requests` shows the history. |
 | **Never repeats itself** | An article you've already been sent won't come back, even if a different source or a second topic turns it up. |
 | **Two news sources** | GNews API while the free 100/day allowance lasts, then Google News RSS - free, unlimited, no key. |
 | **Two AI backends** | Anthropic (cheap, fast) or a local Ollama model (free, slower). One line in `config.yaml`. |
@@ -125,6 +126,7 @@ And the commands, which keep working even if the model is unreachable:
 /time 08:00        set your digest time
 /timezone Tokyo    set your timezone
 /pause /resume     mute or unmute the daily digest
+/requests          (admins) who has asked to join, and what you decided
 /status            your settings and today's API usage
 /allow <id>        (admins) let a friend in
 /deny <id>         (admins) remove them

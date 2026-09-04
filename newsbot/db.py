@@ -81,6 +81,19 @@ CREATE TABLE IF NOT EXISTS allowed_users (
     added_at TEXT NOT NULL
 );
 
+-- Someone who messaged the bot without being on the list. One row per
+-- person, so pestering the bot doesn't spam the owner.
+CREATE TABLE IF NOT EXISTS access_requests (
+    user_id     INTEGER PRIMARY KEY,
+    username    TEXT,
+    first_name  TEXT,
+    note        TEXT,
+    status      TEXT NOT NULL DEFAULT 'pending',
+    requested_at TEXT NOT NULL,
+    decided_at  TEXT,
+    decided_by  INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS admin_users (
     user_id  INTEGER PRIMARY KEY,
     added_by INTEGER,
@@ -527,6 +540,65 @@ class Database:
                VALUES (?, ?, ?)""",
             (user_id, added_by, _utcnow()),
         )
+
+    # -------------------------------------------------------- access requests
+
+    async def raise_access_request(
+        self, user_id: int, username: str | None, first_name: str | None,
+        note: str,
+    ) -> bool:
+        """Record someone asking for access. True if this is a new ask.
+
+        A person who keeps messaging gets one row, not one per message, so
+        the owner is asked once rather than pestered.
+        """
+        def _raise() -> bool:
+            with self._lock:
+                row = self.conn.execute(
+                    "SELECT status FROM access_requests WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
+                if row is not None:
+                    return False
+                self.conn.execute(
+                    """INSERT INTO access_requests
+                       (user_id, username, first_name, note, requested_at)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (user_id, username, first_name, note[:400], _utcnow()),
+                )
+                self.conn.commit()
+                return True
+        return await asyncio.to_thread(_raise)
+
+    async def decide_access_request(self, user_id: int, status: str,
+                                    decided_by: int) -> bool:
+        """Approve or deny, once. False means someone already decided."""
+        def _decide() -> bool:
+            cur = self._write(
+                """UPDATE access_requests
+                   SET status = ?, decided_at = ?, decided_by = ?
+                   WHERE user_id = ? AND status = 'pending'""",
+                (status, _utcnow(), decided_by, user_id),
+            )
+            return cur.rowcount > 0
+        return await asyncio.to_thread(_decide)
+
+    async def list_access_requests(self, *, status: str | None = None,
+                                   limit: int = 20) -> list[sqlite3.Row]:
+        sql = "SELECT * FROM access_requests"
+        params: tuple = ()
+        if status:
+            sql += " WHERE status = ?"
+            params = (status,)
+        sql += " ORDER BY requested_at DESC LIMIT ?"
+        return await asyncio.to_thread(self._read, sql, params + (limit,))
+
+    async def get_access_request(self, user_id: int) -> sqlite3.Row | None:
+        rows = await asyncio.to_thread(
+            self._read, "SELECT * FROM access_requests WHERE user_id = ?",
+            (user_id,),
+        )
+        return rows[0] if rows else None
 
     async def bootstrap_owner(self, user_id: int) -> bool:
         """First-ever user claims ownership (whitelist + admin) atomically.

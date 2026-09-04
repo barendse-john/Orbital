@@ -9,14 +9,18 @@ from __future__ import annotations
 import logging
 
 from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     KeyboardButton,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
     Update,
 )
 from telegram.constants import ChatAction, ParseMode
+from telegram.error import TelegramError
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -58,6 +62,7 @@ your topics, ranked by how widely a story was reported.
 /time &lt;HH:MM&gt; - set your daily digest time
 /timezone &lt;city&gt; - set your timezone
 /pause and /resume - mute or unmute the daily digest
+/requests - (admins) who has asked to join
 /status - your settings and today's API usage
 /help - this message"""
 
@@ -104,6 +109,10 @@ class BotHandlers:
         app.add_handler(CommandHandler("status", self.cmd_status))
         app.add_handler(CommandHandler("allow", self.cmd_allow))
         app.add_handler(CommandHandler("deny", self.cmd_deny))
+        app.add_handler(CommandHandler("requests", self.cmd_requests))
+        app.add_handler(
+            CallbackQueryHandler(self.on_access_decision, pattern=r"^access:")
+        )
         app.add_handler(MessageHandler(filters.LOCATION, self.on_location))
         app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text)
@@ -112,7 +121,7 @@ class BotHandlers:
 
     # ------------------------------------------------------- access control
 
-    async def _allowed(self, update: Update) -> bool:
+    async def _allowed(self, update: Update, context=None) -> bool:
         user = update.effective_user
         if user is None:
             return False
@@ -134,14 +143,109 @@ class BotHandlers:
         allowed |= await self.db.allowed_user_ids()
         if user.id in allowed:
             return True
-        log.warning("Rejected %s (@%s, id %s)", user.first_name, user.username,
-                    user.id)
-        await update.effective_message.reply_text(
-            "This is a private bot, sorry.\n\n"
-            f"Your Telegram ID is {user.id} - send that to the owner if you "
-            "should have access."
-        )
+        await self._request_access(update, context)
         return False
+
+    # ------------------------------------------------------ access requests
+
+    async def _request_access(self, update: Update, context) -> None:
+        """Turn a stranger away, but ask the owner on their behalf."""
+        user = update.effective_user
+        message = update.effective_message
+        existing = await self.db.get_access_request(user.id)
+
+        if existing is not None and existing["status"] == "denied":
+            # No second bite, and the owner is not asked again.
+            await message.reply_text("This is a private bot.")
+            return
+        if existing is not None:
+            await message.reply_text(
+                "Still waiting on the owner - you'll hear back here."
+            )
+            return
+
+        note = (message.text or "").strip()
+        await self.db.raise_access_request(
+            user.id, user.username, user.first_name, note
+        )
+        log.info("Access requested by %s (@%s, id %s)", user.first_name,
+                 user.username, user.id)
+        await message.reply_text(
+            "This is a private bot, but I've asked the owner. "
+            "You'll hear back here."
+        )
+        await self._notify_admins(context, user, note)
+
+    async def _admin_ids(self) -> set[int]:
+        return set(self.cfg.telegram.admins) | await self.db.admin_user_ids()
+
+    async def _notify_admins(self, context, user, note: str) -> None:
+        handle = f"@{user.username}" if user.username else "no username"
+        body = (
+            f"🙋 <b>{esc(user.first_name or 'Someone')}</b> ({esc(handle)}, "
+            f"id <code>{user.id}</code>) wants access."
+        )
+        if note:
+            body += f"\n\nThey said: <i>{esc(note[:300])}</i>"
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Approve",
+                                 callback_data=f"access:approve:{user.id}"),
+            InlineKeyboardButton("🚫 Deny",
+                                 callback_data=f"access:deny:{user.id}"),
+        ]])
+        for admin_id in await self._admin_ids():
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id, text=body, parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard,
+                )
+            except TelegramError as exc:
+                log.warning("Could not reach admin %s: %s", admin_id, exc)
+
+    async def on_access_decision(self, update: Update, context) -> None:
+        """The Approve / Deny buttons. Only admins, and only once."""
+        query = update.callback_query
+        if not await self._is_admin(query.from_user.id):
+            await query.answer("Admins only.", show_alert=True)
+            return
+
+        try:
+            _, action, raw_id = query.data.split(":")
+            target = int(raw_id)
+        except ValueError:
+            await query.answer("That button is stale.")
+            return
+
+        status = "approved" if action == "approve" else "denied"
+        if not await self.db.decide_access_request(target, status,
+                                                   query.from_user.id):
+            # Another admin already pressed a button on their own copy.
+            existing = await self.db.get_access_request(target)
+            settled = existing["status"] if existing else "gone"
+            await query.answer(f"Already {settled}.")
+            await query.edit_message_reply_markup(reply_markup=None)
+            return
+
+        if status == "approved":
+            await self.db.allow_user(target, query.from_user.id)
+        await query.answer("Approved." if status == "approved" else "Denied.")
+
+        by = query.from_user.first_name or query.from_user.id
+        mark = "✅ Approved" if status == "approved" else "🚫 Denied"
+        await query.edit_message_text(
+            f"{query.message.text_html}\n\n{mark} by {esc(str(by))}",
+            parse_mode=ParseMode.HTML, reply_markup=None,
+        )
+
+        try:
+            await context.bot.send_message(
+                chat_id=target,
+                text=("You're in. Send /start and I'll set you up."
+                      if status == "approved"
+                      else "The owner didn't approve access, sorry."),
+            )
+        except TelegramError as exc:
+            log.warning("Could not tell %s the decision: %s", target, exc)
 
     async def _is_admin(self, user_id: int) -> bool:
         if user_id in set(self.cfg.telegram.admins):
@@ -150,7 +254,7 @@ class BotHandlers:
 
     async def _ready_user(self, update: Update, context):
         """Whitelist check + user row + onboarding. None means stop here."""
-        if not await self._allowed(update):
+        if not await self._allowed(update, context):
             return None
         tg = update.effective_user
         user = await self.db.ensure_user(
@@ -182,7 +286,7 @@ class BotHandlers:
         )
 
     async def on_location(self, update: Update, context) -> None:
-        if not await self._allowed(update):
+        if not await self._allowed(update, context):
             return
         tg = update.effective_user
         await self.db.ensure_user(
@@ -267,7 +371,7 @@ class BotHandlers:
     # --------------------------------------------------------- text handling
 
     async def on_text(self, update: Update, context) -> None:
-        if not await self._allowed(update):
+        if not await self._allowed(update, context):
             return
         tg = update.effective_user
         text = (update.effective_message.text or "").strip()
@@ -540,7 +644,7 @@ class BotHandlers:
     # ------------------------------------------------------------ commands
 
     async def cmd_start(self, update: Update, context) -> None:
-        if not await self._allowed(update):
+        if not await self._allowed(update, context):
             return
         tg = update.effective_user
         user = await self.db.ensure_user(
@@ -556,7 +660,7 @@ class BotHandlers:
         )
 
     async def cmd_help(self, update: Update, context) -> None:
-        if not await self._allowed(update):
+        if not await self._allowed(update, context):
             return
         await update.effective_message.reply_text(
             HELP_TEXT, parse_mode=ParseMode.HTML
@@ -658,7 +762,7 @@ class BotHandlers:
         await self._set_time(update, hhmm)
 
     async def cmd_timezone(self, update: Update, context) -> None:
-        if not await self._allowed(update):
+        if not await self._allowed(update, context):
             return
         place = " ".join(context.args).strip()
         if not place:
@@ -686,7 +790,7 @@ class BotHandlers:
         await self._dispatch(update, context, Intent(action="resume"))
 
     async def cmd_status(self, update: Update, context) -> None:
-        if not await self._allowed(update):
+        if not await self._allowed(update, context):
             return
         user_id = update.effective_user.id
         user = await self.db.get_user(user_id)
@@ -709,8 +813,38 @@ class BotHandlers:
             "\n".join(lines), parse_mode=ParseMode.HTML
         )
 
+    async def cmd_requests(self, update: Update, context) -> None:
+        """Who has asked for access, and what was decided."""
+        if not await self._allowed(update, context):
+            return
+        if not await self._is_admin(update.effective_user.id):
+            await update.effective_message.reply_text("Admins only.")
+            return
+
+        rows = await self.db.list_access_requests(limit=20)
+        if not rows:
+            await update.effective_message.reply_text("Nobody has asked yet.")
+            return
+
+        marks = {"pending": "⏳", "approved": "✅", "denied": "🚫"}
+        lines = []
+        for row in rows:
+            handle = f"@{row['username']}" if row["username"] else row["user_id"]
+            line = (f"{marks.get(row['status'], '?')} <b>"
+                    f"{esc(row['first_name'] or 'Someone')}</b> ({esc(str(handle))})")
+            if row["status"] == "pending":
+                line += f"\n   /allow {row['user_id']}  ·  /deny {row['user_id']}"
+            lines.append(line)
+
+        pending = sum(1 for r in rows if r["status"] == "pending")
+        header = f"{pending} waiting" if pending else "Nothing waiting"
+        await update.effective_message.reply_text(
+            f"<b>{header}</b>\n\n" + "\n".join(lines),
+            parse_mode=ParseMode.HTML,
+        )
+
     async def cmd_allow(self, update: Update, context) -> None:
-        if not await self._allowed(update):
+        if not await self._allowed(update, context):
             return
         if not await self._is_admin(update.effective_user.id):
             await update.effective_message.reply_text("Admins only.")
@@ -721,12 +855,14 @@ class BotHandlers:
             await update.effective_message.reply_text("Usage: /allow 123456789")
             return
         await self.db.allow_user(new_id, update.effective_user.id)
+        await self.db.decide_access_request(new_id, "approved",
+                                            update.effective_user.id)
         await update.effective_message.reply_text(
             f"✅ {new_id} can now use the bot. Tell them to send /start."
         )
 
     async def cmd_deny(self, update: Update, context) -> None:
-        if not await self._allowed(update):
+        if not await self._allowed(update, context):
             return
         if not await self._is_admin(update.effective_user.id):
             await update.effective_message.reply_text("Admins only.")
@@ -737,6 +873,8 @@ class BotHandlers:
             await update.effective_message.reply_text("Usage: /deny 123456789")
             return
         removed = await self.db.deny_user(gone_id)
+        await self.db.decide_access_request(gone_id, "denied",
+                                            update.effective_user.id)
         self.scheduler.cancel(gone_id)
         await update.effective_message.reply_text(
             f"Removed {gone_id}." if removed
