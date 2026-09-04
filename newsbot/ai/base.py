@@ -14,6 +14,17 @@ class AIError(RuntimeError):
     """The backend could not produce a response."""
 
 
+def describe(exc: BaseException) -> str:
+    """Name the exception as well as quote it.
+
+    httpx timeouts carry an empty message, so `f"failed: {exc}"` logs a
+    sentence that trails off into nothing and tells you exactly nothing about
+    what went wrong. The class name always says something.
+    """
+    detail = str(exc).strip()
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+
+
 class AIBackend(abc.ABC):
     name: str = "base"
 

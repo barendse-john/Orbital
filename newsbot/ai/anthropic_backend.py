@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import httpx
 
-from .base import AIBackend, AIError
+from .base import AIBackend, AIError, describe
 
 log = logging.getLogger(__name__)
 
 API_URL = "https://api.anthropic.com/v1/messages"
 API_VERSION = "2023-06-01"
+
+# A digest is built once a day and nobody is watching it happen, so a slow
+# night on the Pi's connection should cost a few seconds, not the summaries.
+BACKOFF_SECONDS = (1.0, 4.0)
+RETRY_STATUSES = {408, 409, 429, 500, 502, 503, 504, 529}
 
 
 class AnthropicBackend(AIBackend):
@@ -42,15 +48,30 @@ class AnthropicBackend(AIBackend):
             "system": system,
             "messages": [{"role": "user", "content": user}],
         }
-        try:
-            resp = await self._client.post(API_URL, json=payload)
-        except httpx.HTTPError as exc:
-            raise AIError(f"Anthropic request failed: {exc}") from exc
+        resp = None
+        for attempt in range(len(BACKOFF_SECONDS) + 1):
+            wait = BACKOFF_SECONDS[attempt] if attempt < len(BACKOFF_SECONDS) \
+                else None
+            try:
+                resp = await self._client.post(API_URL, json=payload)
+            except httpx.HTTPError as exc:
+                failure = AIError(f"Anthropic request failed: {describe(exc)}")
+            else:
+                if resp.status_code not in RETRY_STATUSES:
+                    break
+                failure = AIError(
+                    f"Anthropic error {resp.status_code}: "
+                    f"{resp.text[:200] or '(no body)'}"
+                )
+                wait = _retry_after(resp, wait)
+
+            if wait is None:
+                raise failure
+            log.warning("%s - retrying in %.0fs", failure, wait)
+            await asyncio.sleep(wait)
 
         if resp.status_code == 401:
             raise AIError("Anthropic rejected the API key (401)")
-        if resp.status_code == 429:
-            raise AIError("Anthropic rate limit hit (429)")
         if resp.status_code >= 400:
             raise AIError(f"Anthropic error {resp.status_code}: {resp.text[:300]}")
 
@@ -64,3 +85,14 @@ class AnthropicBackend(AIBackend):
 
     async def close(self) -> None:
         await self._client.aclose()
+
+
+def _retry_after(resp, default: float | None) -> float | None:
+    """Honour the server's own backoff, within reason."""
+    if default is None:
+        return None
+    try:
+        asked = float(resp.headers.get("retry-after", ""))
+    except (TypeError, ValueError):
+        return default
+    return max(default, min(asked, 30.0))

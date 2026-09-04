@@ -6,7 +6,7 @@ import logging
 
 import httpx
 
-from .base import AIBackend, AIError
+from .base import AIBackend, AIError, describe
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +40,8 @@ class OllamaBackend(AIBackend):
                                            json=payload)
         except httpx.HTTPError as exc:
             raise AIError(
-                f"Ollama unreachable at {self.base_url} ({exc}). Is it running?"
+                f"Ollama unreachable at {self.base_url} ({describe(exc)}). "
+                f"Is it running?"
             ) from exc
 
         if resp.status_code == 404:
