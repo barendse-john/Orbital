@@ -71,6 +71,21 @@ class RetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.calls, 3)
         await backend.close()
 
+    async def test_a_caller_in_a_hurry_gets_one_attempt(self):
+        self.calls = 0
+
+        def handler(request):
+            self.calls += 1
+            raise httpx.ReadTimeout("")
+
+        backend = self._backend(handler)
+        with self.assertRaises(AIError):
+            # Someone is waiting on a chat reply: three timeouts in a row
+            # reads as the bot having frozen.
+            await backend.complete("s", "u", attempts=1)
+        self.assertEqual(self.calls, 1)
+        await backend.close()
+
     async def test_a_bad_key_is_not_retried(self):
         self.calls = 0
 

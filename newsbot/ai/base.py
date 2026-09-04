@@ -36,8 +36,15 @@ class AIBackend(abc.ABC):
         *,
         max_tokens: int = 600,
         temperature: float = 0.0,
+        attempts: int | None = None,
     ) -> str:
-        """Return the model's text response. Raises AIError on failure."""
+        """Return the model's text response. Raises AIError on failure.
+
+        `attempts` bounds how long a caller is willing to wait: 1 means fail
+        fast. Someone is watching a chat reply, so a minute of retrying reads
+        as the bot having frozen; nobody is watching the 05:00 digest, so it
+        can afford to be patient.
+        """
 
     async def health(self) -> bool:
         """Cheap liveness probe used by /status."""

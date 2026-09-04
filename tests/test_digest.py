@@ -23,7 +23,8 @@ class StubAI(AIBackend):
         self.fail = fail
         self.calls = 0
 
-    async def complete(self, system, user, *, max_tokens=600, temperature=0.0):
+    async def complete(self, system, user, *, max_tokens=600,
+                       temperature=0.0, attempts=None):
         self.calls += 1
         if self.fail:
             raise AIError("backend down")

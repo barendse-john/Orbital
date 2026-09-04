@@ -22,7 +22,8 @@ class ScriptedAI(AIBackend):
         self.prompts = []
         self.fail = fail
 
-    async def complete(self, system, user, *, max_tokens=600, temperature=0.0):
+    async def complete(self, system, user, *, max_tokens=600,
+                       temperature=0.0, attempts=None):
         self.prompts.append(user)
         if self.fail:
             raise AIError("backend down")

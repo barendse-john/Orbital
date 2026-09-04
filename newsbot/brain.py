@@ -219,7 +219,8 @@ async def parse_intent(
         )
         try:
             raw = await ai.complete(
-                INTENT_SYSTEM, f"{context}\n\nMessage: {message}", max_tokens=300
+                INTENT_SYSTEM, f"{context}\n\nMessage: {message}",
+                max_tokens=300, attempts=1,
             )
             data = extract_json(raw)
             if isinstance(data, dict):
@@ -444,7 +445,7 @@ async def plan_topic(
             parts.append("Write the query now. Do not ask anything further.")
         try:
             raw = await ai.complete(
-                TOPIC_SYSTEM, "\n".join(parts), max_tokens=350
+                TOPIC_SYSTEM, "\n".join(parts), max_tokens=350, attempts=1
             )
             data = extract_json(raw)
             if isinstance(data, dict):
@@ -468,7 +469,8 @@ async def refine_query(
     prompt = (f"Topic: {label}\nCurrent query: {current}\n"
               f"Instruction: {instruction.strip()}")
     try:
-        raw = await ai.complete(REFINE_SYSTEM, prompt, max_tokens=250)
+        raw = await ai.complete(REFINE_SYSTEM, prompt, max_tokens=250,
+                                attempts=1)
     except AIError as exc:
         log.warning("Query refinement unavailable (%s); leaving it alone", exc)
         return None
@@ -626,7 +628,8 @@ async def plan_chat_turn(
     prompt = (f"Their topics: {', '.join(topics) if topics else 'none'}\n\n"
               + prompt)
     try:
-        raw = await ai.complete(CHAT_SYSTEM, prompt, max_tokens=250)
+        raw = await ai.complete(CHAT_SYSTEM, prompt, max_tokens=250,
+                                attempts=1)
     except AIError as exc:
         log.warning("Chat planning unavailable (%s); searching instead", exc)
         return ChatTurn(search=message.strip())
@@ -694,7 +697,7 @@ async def write_chat_answer(
 
     try:
         return (await ai.complete(
-            CHAT_ANSWER_SYSTEM, prompt, max_tokens=400
+            CHAT_ANSWER_SYSTEM, prompt, max_tokens=400, attempts=1
         )).strip()
     except AIError as exc:
         log.warning("Chat answer unavailable (%s); listing the articles", exc)
@@ -707,6 +710,7 @@ async def write_chat_answer(
 
 async def summarise_articles(
     ai: AIBackend | None, articles: list, *, max_tokens_per_article: int = 60,
+    attempts: int | None = None,
 ) -> list[str]:
     """One line per article, in order. Falls back to the article's own blurb."""
     if not articles:
@@ -736,6 +740,7 @@ async def summarise_articles(
         raw = await ai.complete(
             SUMMARY_SYSTEM, prompt,
             max_tokens=max(120, max_tokens_per_article * len(articles)),
+            attempts=attempts,
         )
     except AIError as exc:
         log.warning("Summarisation failed (%s); using article blurbs", exc)

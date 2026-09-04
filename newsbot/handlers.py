@@ -65,6 +65,7 @@ your topics, ranked by how widely a story was reported.
 /timezone &lt;city&gt; - set your timezone
 /pause and /resume - mute or unmute the daily digest
 /requests - (admins) who has asked to join
+/users - (admins) who can use the bot
 /status - your settings and today's API usage
 /help - this message"""
 
@@ -112,6 +113,7 @@ class BotHandlers:
         app.add_handler(CommandHandler("allow", self.cmd_allow))
         app.add_handler(CommandHandler("deny", self.cmd_deny))
         app.add_handler(CommandHandler("requests", self.cmd_requests))
+        app.add_handler(CommandHandler("users", self.cmd_users))
         app.add_handler(
             CallbackQueryHandler(self.on_access_decision, pattern=r"^access:")
         )
@@ -684,7 +686,7 @@ class BotHandlers:
                     f"<b>{esc(query)}</b>.")
             return miss, f"nothing found on {query}"
 
-        summaries = await summarise_articles(self.ai, articles)
+        summaries = await summarise_articles(self.ai, articles, attempts=1)
         for article, summary in zip(articles, summaries):
             article.summary = summary
 
@@ -880,6 +882,49 @@ class BotHandlers:
         ]
         await update.effective_message.reply_text(
             "\n".join(lines), parse_mode=ParseMode.HTML
+        )
+
+    async def cmd_users(self, update: Update, context) -> None:
+        """Everyone who can use the bot, and where their access came from."""
+        if not await self._allowed(update, context):
+            return
+        if not await self._is_admin(update.effective_user.id):
+            await update.effective_message.reply_text("Admins only.")
+            return
+
+        config_ids = set(self.cfg.telegram.whitelist)
+        admin_ids = await self._admin_ids()
+        added = await self.db.allowed_with_dates()
+        known = await self.db.known_users()
+
+        lines = []
+        for user_id in sorted(config_ids | admin_ids | set(added)):
+            row = known.get(user_id)
+            name = (row["first_name"] if row else None) or "Unknown"
+            handle = f" (@{row['username']})" if row and row["username"] else ""
+            tags = []
+            if user_id in admin_ids:
+                tags.append("admin")
+            if user_id in config_ids:
+                tags.append("in config.yaml")
+            if user_id in added:
+                tags.append(f"added {added[user_id][:10]}")
+            if row is None:
+                # On the list but has never messaged - usually a typo'd id.
+                tags.append("never messaged")
+            elif not row["digest_enabled"]:
+                tags.append("digest paused")
+            lines.append(
+                f"• <b>{esc(name)}</b>{esc(handle)} - <code>{user_id}</code>"
+                f"\n   <i>{esc(', '.join(tags))}</i>"
+            )
+
+        waiting = len(await self.db.list_access_requests(status="pending"))
+        footer = (f"\n\n⏳ {waiting} waiting - /requests"
+                  if waiting else "\n\n<i>/deny &lt;id&gt; removes someone.</i>")
+        await update.effective_message.reply_text(
+            f"👥 <b>{len(lines)} with access</b>\n\n" + "\n".join(lines) + footer,
+            parse_mode=ParseMode.HTML,
         )
 
     async def cmd_requests(self, update: Update, context) -> None:

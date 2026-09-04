@@ -26,7 +26,7 @@ class OllamaBackend(AIBackend):
 
     async def complete(
         self, system: str, user: str, *, max_tokens: int = 600,
-        temperature: float = 0.0,
+        temperature: float = 0.0, attempts: int | None = None,
     ) -> str:
         payload = {
             "model": self.model,

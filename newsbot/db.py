@@ -603,6 +603,21 @@ class Database:
         )
         return {r["user_id"] for r in rows}
 
+    async def known_users(self) -> dict[int, sqlite3.Row]:
+        """Everyone the bot has ever seen, by id - names for a bare user id."""
+        rows = await asyncio.to_thread(
+            self._read,
+            "SELECT user_id, username, first_name, digest_time, timezone, "
+            "digest_enabled FROM users", (),
+        )
+        return {r["user_id"]: r for r in rows}
+
+    async def allowed_with_dates(self) -> dict[int, str]:
+        rows = await asyncio.to_thread(
+            self._read, "SELECT user_id, added_at FROM allowed_users", ()
+        )
+        return {r["user_id"]: r["added_at"] for r in rows}
+
     async def allow_user(self, user_id: int, added_by: int | None = None) -> None:
         await asyncio.to_thread(
             self._write,

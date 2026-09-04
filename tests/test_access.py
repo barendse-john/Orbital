@@ -160,6 +160,33 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("1 waiting", body)
         self.assertIn(str(STRANGER), body)
 
+    async def test_users_lists_who_has_access_and_why(self):
+        await self._stranger_says("hi")
+        await self._press("approve")
+        await self.db.ensure_user(STRANGER, "samwise", "Sam")
+
+        update = FakeUpdate(OWNER)
+        await self.bot.cmd_users(update, self.context)
+        body = update.effective_message.replies[0]
+        self.assertIn("Sam", body)
+        self.assertIn("@samwise", body)
+        self.assertIn("admin", body)          # the owner
+        self.assertIn("in config.yaml", body)
+
+    async def test_users_flags_an_id_that_never_messaged(self):
+        # The usual cause is a typo in /allow, and it looks identical to a
+        # working entry unless it is called out.
+        await self.db.allow_user(123456)
+        update = FakeUpdate(OWNER)
+        await self.bot.cmd_users(update, self.context)
+        self.assertIn("never messaged", update.effective_message.replies[0])
+
+    async def test_users_is_admins_only(self):
+        await self.db.allow_user(OUTSIDER)
+        update = FakeUpdate(OUTSIDER)
+        await self.bot.cmd_users(update, self.context)
+        self.assertEqual(update.effective_message.replies, ["Admins only."])
+
     async def test_requests_is_admins_only(self):
         await self.db.allow_user(OUTSIDER)
         update = FakeUpdate(OUTSIDER)

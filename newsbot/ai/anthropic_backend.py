@@ -39,7 +39,7 @@ class AnthropicBackend(AIBackend):
 
     async def complete(
         self, system: str, user: str, *, max_tokens: int = 600,
-        temperature: float = 0.0,
+        temperature: float = 0.0, attempts: int | None = None,
     ) -> str:
         payload = {
             "model": self.model,
@@ -48,10 +48,13 @@ class AnthropicBackend(AIBackend):
             "system": system,
             "messages": [{"role": "user", "content": user}],
         }
+        allowed = len(BACKOFF_SECONDS) + 1 if attempts is None \
+            else max(1, attempts)
         resp = None
-        for attempt in range(len(BACKOFF_SECONDS) + 1):
-            wait = BACKOFF_SECONDS[attempt] if attempt < len(BACKOFF_SECONDS) \
-                else None
+        for attempt in range(allowed):
+            last_try = attempt >= allowed - 1
+            wait = None if last_try or attempt >= len(BACKOFF_SECONDS) \
+                else BACKOFF_SECONDS[attempt]
             try:
                 resp = await self._client.post(API_URL, json=payload)
             except httpx.HTTPError as exc:
