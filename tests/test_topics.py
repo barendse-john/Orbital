@@ -53,16 +53,25 @@ class PlanTopicTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_answer_produces_the_query(self):
         ai = ScriptedAI(NARROWED)
-        plan = await plan_topic(ai, "finance", answer="markets and rates",
-                                question_asked=BROAD["question"])
+        plan = await plan_topic(ai, "finance", transcript=[
+            {"q": BROAD["question"], "a": "markets and rates"},
+        ])
         self.assertEqual(plan.label, "Markets and Rates")
         self.assertIn("central bank", plan.query)
         self.assertIn("markets and rates", ai.prompts[0])
 
-    async def test_it_never_asks_twice(self):
-        # Even if the model tries to ask again, an answer must yield a query.
-        plan = await plan_topic(ScriptedAI(BROAD), "finance", answer="crypto",
-                                question_asked="which bit?")
+    async def test_it_can_ask_again_while_the_answer_is_still_broad(self):
+        plan = await plan_topic(ScriptedAI(BROAD), "finance", transcript=[
+            {"q": "which bit?", "a": "all of it really"},
+        ])
+        self.assertIsNotNone(plan.question)
+
+    async def test_it_stops_asking_after_four_rounds(self):
+        # Even if the model would keep going, adding a topic is not an
+        # interrogation: round five must produce a query.
+        transcript = [{"q": f"q{i}", "a": f"a{i}"} for i in range(4)]
+        plan = await plan_topic(ScriptedAI(BROAD), "finance",
+                                transcript=transcript)
         self.assertIsNone(plan.question)
         self.assertTrue(plan.query)
 
@@ -73,7 +82,8 @@ class PlanTopicTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(query_is_sane(plan.query))
 
     async def test_no_model_still_gives_a_usable_query(self):
-        plan = await plan_topic(ScriptedAI(BROAD, fail=True), "manchester united")
+        plan = await plan_topic(ScriptedAI(BROAD, fail=True),
+                                "manchester united")
         self.assertIsNone(plan.question)
         self.assertEqual(plan.query, '"manchester united"')
 

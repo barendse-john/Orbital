@@ -7,6 +7,7 @@ a slash command, so the bot still works when the model is unreachable.
 from __future__ import annotations
 
 import logging
+import re
 
 from telegram import (
     InlineKeyboardButton,
@@ -28,8 +29,9 @@ from telegram.ext import (
 )
 
 from . import timezones
-from .brain import (Intent, TopicPlan, link_citations, normalise_time,
-                    parse_intent, plain_query, plan_chat_turn, plan_topic,
+from .brain import (MAX_TOPIC_QUESTIONS, Intent, TopicPlan, link_citations,
+                    normalise_time, parse_intent, plain_query,
+                    plan_chat_turn, plan_topic, refine_query,
                     resolve_timezone, summarise_articles, valid_timezone,
                     write_chat_answer)
 from .db import Database
@@ -420,6 +422,8 @@ class BotHandlers:
         if action == "add_topic" and intent.topic:
             await self._start_add_topic(update, context, intent.topic,
                                         intent.reply)
+        elif action == "retune_topic" and intent.topic:
+            await self._retune(update, context, intent.topic)
         elif action == "remove_topic" and intent.topic:
             await self._remove_topic(update, intent.topic)
         elif action == "list_topics":
@@ -480,26 +484,38 @@ class BotHandlers:
         await context.bot.send_chat_action(user_id, ChatAction.TYPING)
         plan = await plan_topic(self.ai, label)
         if plan.question:
-            await self.db.set_pending_topic(user_id, label, plan.question)
-            await update.effective_message.reply_text(
-                f"{esc(plan.question)}\n\n<i>Or say \"skip\" to follow all of "
-                f"{esc(label)}.</i>",
-                parse_mode=ParseMode.HTML,
-            )
+            await self._ask_about_topic(update, label, plan.question, [])
             return
         await self._save_topic(update, plan.label, plan.query or label, reply)
 
+    async def _ask_about_topic(self, update: Update, label: str, question: str,
+                               transcript: list[dict]) -> None:
+        await self.db.set_pending_topic(update.effective_user.id, label,
+                                        question, transcript=transcript)
+        # The way out is only worth spelling out the first time.
+        hint = ("\n\n<i>Or say \"skip\" and I'll take it as it is.</i>"
+                if not transcript else "")
+        await update.effective_message.reply_text(
+            f"{esc(question)}{hint}", parse_mode=ParseMode.HTML,
+        )
+
     async def _answer_pending_topic(self, update: Update, context,
-                                    pending: tuple[str, str], text: str) -> None:
-        label, question = pending
+                                    pending: tuple, text: str) -> None:
+        label, question, transcript = pending
         user_id = update.effective_user.id
         await context.bot.send_chat_action(user_id, ChatAction.TYPING)
 
         if _is_skip(text):
-            plan = TopicPlan(label=label, query=plain_query(label))
+            answers = " ".join(str(t.get("a", "")) for t in transcript)
+            plan = TopicPlan(label=label,
+                             query=plain_query(label, answers or None))
         else:
-            plan = await plan_topic(self.ai, label, answer=text,
-                                    question_asked=question)
+            transcript = transcript + [{"q": question, "a": text}]
+            plan = await plan_topic(self.ai, label, transcript=transcript)
+            if plan.question and len(transcript) < MAX_TOPIC_QUESTIONS:
+                await self._ask_about_topic(update, label, plan.question,
+                                            transcript)
+                return
 
         # A topic that already exists is being retuned, and keeps its own
         # label - renaming what someone follows out from under them is rude.
@@ -550,12 +566,10 @@ class BotHandlers:
                 "No topics yet. Try \"i like Formula 1\" or /add space launches."
             )
             return
-        lines = "\n".join(
-            f"• <b>{esc(t.label)}</b>\n   <i>{esc(t.query)}</i>" for t in topics
-        )
+        lines = "\n".join(f"• <b>{esc(t.label)}</b>" for t in topics)
         await update.effective_message.reply_text(
             f"You're following:\n{lines}\n\n"
-            "<i>/retune &lt;topic&gt; if one is pulling in the wrong news.</i>",
+            "<i>Tell me if one is pulling in the wrong news.</i>",
             parse_mode=ParseMode.HTML,
         )
 
@@ -595,7 +609,9 @@ class BotHandlers:
         user_id = update.effective_user.id
         await context.bot.send_chat_action(user_id, ChatAction.TYPING)
 
-        turn = await plan_chat_turn(self.ai, history, text)
+        topics = await self.db.list_topics(user_id)
+        turn = await plan_chat_turn(self.ai, history, text,
+                                    topics=[t.label for t in topics])
         if turn.end:
             await self.db.end_chat(user_id)
             await update.effective_message.reply_text("Alright.")
@@ -608,9 +624,56 @@ class BotHandlers:
             body = plain = turn.reply or "What about it?"
 
         await self.db.append_chat(user_id, "bot", plain)
+        if notes := await self._learn_from_chat(user_id, turn):
+            body += "\n\n" + "\n".join(f"<i>{note}</i>" for note in notes)
         await update.effective_message.reply_text(
             body, parse_mode=ParseMode.HTML, disable_web_page_preview=True
         )
+
+    async def _learn_from_chat(self, user_id: int, turn) -> list[str]:
+        """Let the conversation improve the topics. Returns lines to append.
+
+        An explicit steer is acted on at once. A passing interest is only
+        recorded: it has to keep coming up over more than a week before it
+        changes anything, so one busy week for a company doesn't rewrite a
+        query that then outlives the story.
+        """
+        topics = {t.label.lower(): t for t in await self.db.list_topics(user_id)}
+        notes: list[str] = []
+
+        if turn.steer:
+            wanted = str(turn.steer.get("label") or "").strip().lower()
+            change = str(turn.steer.get("change") or "").strip()
+            topic = topics.get(wanted)
+            if topic is not None and change:
+                if note := await self._apply_refinement(user_id, topic, change):
+                    notes.append(note)
+
+        for interest in turn.interests:
+            topic = topics.get(interest["label"].strip().lower())
+            if topic is not None:
+                await self.db.record_signal(user_id, topic.label,
+                                            interest["phrase"])
+
+        for label, phrase in await self.db.ripe_signals(user_id):
+            await self.db.mark_signals_applied(user_id, label, phrase)
+            topic = topics.get(label.lower())
+            if topic is None:
+                continue
+            if note := await self._apply_refinement(user_id, topic,
+                                                    f"add {phrase}"):
+                notes.append(note)
+
+        return notes
+
+    async def _apply_refinement(self, user_id: int, topic, change: str):
+        refined = await refine_query(self.ai, topic.label, topic.query, change)
+        if refined is None:
+            return None
+        query, note = refined
+        await self.db.update_topic_query(user_id, topic.label, query)
+        log.info("Tightened %r for %s: %s", topic.label, user_id, query)
+        return f"Tightened <b>{esc(topic.label)}</b> - {esc(note)}."
 
     async def _answer_from_news(self, history: list[dict], text: str,
                                 query: str) -> tuple[str, str]:
@@ -682,8 +745,11 @@ class BotHandlers:
     async def cmd_retune(self, update: Update, context) -> None:
         if not await self._ready_user(update, context):
             return
+        await self._retune(update, context, " ".join(context.args).strip())
+
+    async def _retune(self, update: Update, context, wanted: str) -> None:
         user_id = update.effective_user.id
-        wanted = " ".join(context.args).strip()
+        wanted = wanted.strip()
         topics = await self.db.list_topics(user_id)
         if not wanted or not topics:
             await update.effective_message.reply_text(
@@ -691,8 +757,15 @@ class BotHandlers:
             )
             return
         needle = wanted.lower()
-        match = next((t for t in topics if t.label.lower() == needle), None) \
+        words = {w for w in re.findall(r"[a-z0-9]{4,}", needle)}
+        match = (
+            next((t for t in topics if t.label.lower() == needle), None)
             or next((t for t in topics if needle in t.label.lower()), None)
+            # "the space topic" should still find "Satellites and Space".
+            or next((t for t in topics
+                     if words & set(re.findall(r"[a-z0-9]{4,}", t.label.lower()))),
+                    None)
+        )
         if match is None:
             await update.effective_message.reply_text(
                 f"You're not following anything like \"{esc(wanted)}\".",
@@ -703,11 +776,7 @@ class BotHandlers:
         await context.bot.send_chat_action(user_id, ChatAction.TYPING)
         plan = await plan_topic(self.ai, match.label)
         if plan.question:
-            await self.db.set_pending_topic(user_id, match.label, plan.question)
-            await update.effective_message.reply_text(
-                f"{esc(plan.question)}\n\n<i>Or say \"skip\" to leave it as it "
-                f"is.</i>", parse_mode=ParseMode.HTML,
-            )
+            await self._ask_about_topic(update, match.label, plan.question, [])
             return
         await self._save_topic(update, match.label, plan.query or match.query)
 

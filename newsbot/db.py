@@ -52,6 +52,21 @@ CREATE TABLE IF NOT EXISTS pending_topics (
     asked_at TEXT NOT NULL
 );
 
+-- Things the user said that might belong in a topic's search query. An
+-- explicit steer is acted on at once; a passing interest has to survive a
+-- week before it counts, so one busy news week doesn't rewrite a query.
+CREATE TABLE IF NOT EXISTS topic_signals (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    label   TEXT NOT NULL,
+    phrase  TEXT NOT NULL,
+    seen_at TEXT NOT NULL,
+    applied INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS topic_signals_lookup
+    ON topic_signals (user_id, label, phrase);
+
 -- An open back-and-forth about the news. Kept in SQLite rather than in
 -- memory so a deploy restart doesn't drop someone mid-conversation.
 CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -147,8 +162,25 @@ class Database:
         self._conn.execute("PRAGMA foreign_keys=ON")
         with self._lock:
             self._conn.executescript(SCHEMA)
+            self._migrate()
             self._conn.commit()
         log.info("Database ready at %s", self.path)
+
+    def _migrate(self) -> None:
+        """Columns added after a release. CREATE TABLE IF NOT EXISTS won't
+        add them to a database that already exists on the Pi."""
+        added = [
+            ("pending_topics", "asked", "INTEGER NOT NULL DEFAULT 1"),
+            ("pending_topics", "transcript", "TEXT NOT NULL DEFAULT '[]'"),
+        ]
+        for table, column, decl in added:
+            try:
+                self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {decl}"
+                )
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
 
     def close(self) -> None:
         if self._conn:
@@ -295,26 +327,33 @@ class Database:
 
     # -------------------------------------------------- pending clarification
 
-    async def set_pending_topic(self, user_id: int, label: str,
-                                question: str) -> None:
+    async def set_pending_topic(self, user_id: int, label: str, question: str,
+                                *, transcript: list[dict] | None = None) -> None:
+        """Ask (or ask again), keeping what has been said so far."""
+        history = json.dumps(transcript or [])
+        asked = len(transcript or []) + 1
         await asyncio.to_thread(
             self._write,
-            """INSERT INTO pending_topics (user_id, label, question, asked_at)
-               VALUES (?, ?, ?, ?)
+            """INSERT INTO pending_topics
+                   (user_id, label, question, asked_at, asked, transcript)
+               VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(user_id) DO UPDATE SET
                    label = excluded.label,
                    question = excluded.question,
-                   asked_at = excluded.asked_at""",
-            (user_id, label.strip(), question.strip(), _utcnow()),
+                   asked_at = excluded.asked_at,
+                   asked = excluded.asked,
+                   transcript = excluded.transcript""",
+            (user_id, label.strip(), question.strip(), _utcnow(), asked, history),
         )
 
     async def get_pending_topic(
         self, user_id: int, *, max_age_minutes: int = 15,
-    ) -> tuple[str, str] | None:
-        """(label, question), or None once it has gone stale."""
+    ) -> tuple[str, str, list[dict]] | None:
+        """(label, question, what has been asked and answered so far)."""
         rows = await asyncio.to_thread(
             self._read,
-            "SELECT label, question, asked_at FROM pending_topics WHERE user_id = ?",
+            "SELECT label, question, asked_at, transcript "
+            "FROM pending_topics WHERE user_id = ?",
             (user_id,),
         )
         if not rows:
@@ -326,7 +365,11 @@ class Database:
         if datetime.now(timezone.utc) - asked > timedelta(minutes=max_age_minutes):
             await self.clear_pending_topic(user_id)
             return None
-        return rows[0]["label"], rows[0]["question"]
+        try:
+            transcript = json.loads(rows[0]["transcript"])
+        except (json.JSONDecodeError, TypeError, KeyError):
+            transcript = []
+        return rows[0]["label"], rows[0]["question"], transcript
 
     async def clear_pending_topic(self, user_id: int) -> None:
         await asyncio.to_thread(
@@ -338,6 +381,55 @@ class Database:
             cur = self._write("DELETE FROM topics WHERE user_id = ?", (user_id,))
             return cur.rowcount
         return await asyncio.to_thread(_clear)
+
+    # ------------------------------------------------------- interest signals
+
+    async def record_signal(self, user_id: int, label: str, phrase: str) -> None:
+        await asyncio.to_thread(
+            self._write,
+            """INSERT INTO topic_signals (user_id, label, phrase, seen_at)
+               VALUES (?, ?, ?, ?)""",
+            (user_id, label.strip(), phrase.strip().lower()[:60], _utcnow()),
+        )
+
+    async def ripe_signals(self, user_id: int, *, min_mentions: int = 3,
+                           min_days: int = 7) -> list[tuple[str, str]]:
+        """Interests that have lasted, as (label, phrase).
+
+        A phrase only counts once it has been mentioned enough times AND the
+        mentions span more than a week - John's rule: a busy Nvidia week is
+        watched, not acted on, and only a still-busy week later changes
+        anything.
+        """
+        rows = await asyncio.to_thread(
+            self._read,
+            """SELECT label, phrase, COUNT(*) AS hits,
+                      MIN(seen_at) AS first_seen, MAX(seen_at) AS last_seen
+               FROM topic_signals
+               WHERE user_id = ? AND applied = 0
+               GROUP BY label, phrase
+               HAVING hits >= ?""",
+            (user_id, min_mentions),
+        )
+        ripe = []
+        for row in rows:
+            try:
+                first = datetime.fromisoformat(row["first_seen"])
+                last = datetime.fromisoformat(row["last_seen"])
+            except ValueError:
+                continue
+            if last - first >= timedelta(days=min_days):
+                ripe.append((row["label"], row["phrase"]))
+        return ripe
+
+    async def mark_signals_applied(self, user_id: int, label: str,
+                                   phrase: str) -> None:
+        await asyncio.to_thread(
+            self._write,
+            """UPDATE topic_signals SET applied = 1
+               WHERE user_id = ? AND label = ? AND phrase = ?""",
+            (user_id, label, phrase),
+        )
 
     # ------------------------------------------------------------ news chat
 

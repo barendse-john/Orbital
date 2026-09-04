@@ -14,7 +14,8 @@ news source and the model you choose.
 | | |
 |---|---|
 | **Understands plain English** | *"i like Manchester United"* saves a topic. *"any updates on Starship?"* runs a one-off search. *"send it at 7am"* moves your digest. |
-| **Asks before it guesses** | Say *"finance"* and it asks which part you meant, then turns the answer into a real search query (`"financial markets" OR "central bank"`) instead of matching the word anywhere. /retune fixes a topic that drifted. |
+| **Asks before it guesses** | Say *"finance"* and it asks what you actually mean - up to four short questions, stopping the moment it could write a good query - then searches for `"financial markets" OR "central bank"` instead of matching the word anywhere. |
+| **Learns from talking to you** | Say *"more on launch startups"* mid-conversation and the topic's query changes there and then. Something you just keep asking about has to keep coming up for over a week before it counts, so one busy news week doesn't rewrite what you follow. Every change is announced in one line. |
 | **Daily digest** | One short message at a time you pick, in your own timezone. The best six stories of the last 24 hours, ranked by how many outlets ran them, how well they match your topic, the source's track record and how late in the day they broke. Each story is a sentence with the outlet's name carrying the link, and the lead story's picture on top. |
 | **A news chat, not a digest on demand** | Ask for a digest mid-afternoon and it says so, then asks what you actually want to know - and answers from real reporting, with the links in the words. It follows up until you say thanks or go quiet. |
 | **Per-person setup** | Whitelisted friends each get their own topics, their own digest time, their own timezone. |
@@ -120,7 +121,7 @@ And the commands, which keep working even if the model is unreachable:
 /topics            what you follow
 /add <topic>       follow something
 /remove <topic>    stop following it
-/retune <topic>    narrow what a topic searches for
+/retune <topic>    narrow what a topic searches for (or just say so)
 /search <query>    search now
 /digest            (admins) send the ranked digest immediately
 /time 08:00        set your digest time

@@ -18,7 +18,8 @@ from .ai import AIBackend, AIError
 log = logging.getLogger(__name__)
 
 ACTIONS = {
-    "add_topic", "remove_topic", "list_topics", "clear_topics", "search",
+    "add_topic", "remove_topic", "retune_topic", "list_topics", "clear_topics",
+    "search",
     "set_time", "set_timezone", "digest_now", "pause", "resume", "help", "chat",
 }
 
@@ -26,8 +27,9 @@ INTENT_SYSTEM = """You are the intent parser for a personal news bot on Telegram
 Read the user's message and reply with ONE JSON object and nothing else.
 
 Fields:
-  action    one of: add_topic, remove_topic, list_topics, clear_topics, search,
-            set_time, set_timezone, digest_now, pause, resume, help, chat
+  action    one of: add_topic, remove_topic, retune_topic, list_topics,
+            clear_topics, search, set_time, set_timezone, digest_now, pause,
+            resume, help, chat
   topic     short human label for the topic (add_topic / remove_topic)
   query     news search query, 2-6 words, no punctuation (add_topic / search)
   time      "HH:MM" 24-hour (set_time only)
@@ -40,6 +42,9 @@ Guidance:
 - "search up news about satellites", "any updates on Starship?", "what's
   happening in Sudan" -> search. A one-off question = a search, not a topic.
 - "stop sending me F1", "drop tennis" -> remove_topic.
+- "the space topic is too broad", "finance is giving me junk", "fix my
+  finance topic" -> retune_topic, with `topic` set to which one. They
+  want it narrowed, not deleted.
 - "what am i following" -> list_topics.
 - "send it at 7am", "make it 19:30" -> set_time.
 - "i'm in Tokyo", "i moved to Lisbon" -> set_timezone.
@@ -57,23 +62,28 @@ help", "just say the word". Do not ask a question unless you genuinely cannot
 act without the answer. One sentence, warm but flat-ended - the user is
 texting a tool, not being served by a concierge."""
 
-TOPIC_SYSTEM = """You turn a person's stated interest into a news search query.
+TOPIC_SYSTEM = """You are working out what someone actually wants news about,
+then writing the search query for it.
 
 Reply with ONE JSON object and nothing else:
-  question  one short question that would narrow the topic, or null
+  question  the next thing worth asking, or null if you can write the query
   label     short human label for the topic, 1-4 words
-  query     the search query, or null when you are asking a question
+  query     the search query, or null while you are still asking
 
-Ask a question ONLY when the topic is so broad that the results would be
-unrelated to what they meant. "finance" matches a local water-treatment grant
-and a film production company; "Manchester United" and "Starship launches" are
-already specific and need no question. One question, with two or three
-concrete options in it, never more.
+Ask when the answers so far would still return unrelated news. "finance"
+matches a local water-treatment grant and a film production company;
+"Manchester United" and "Starship launches" are already specific and need no
+question at all. Each question must build on what they have already said -
+never re-ask something they answered, and never ask two things at once. Stop
+the moment you could write a good query; a short exchange is the goal, not a
+thorough one.
 
 When you write a query:
 - Syntax: "quoted phrases" for anything multi-word, OR between alternatives,
   AND to require both, NOT to exclude. Parentheses group.
-- 2 to 6 phrases, the words a headline would actually use.
+- Build it from THEIR words. If they said "reusable rockets", search for
+  "reusable rockets", not "space transportation".
+- 2 to 8 phrases, the words a headline would actually use.
 - Under 180 characters.
 - Only what they asked for - never widen the topic on their behalf.
 
@@ -81,15 +91,32 @@ Examples:
   Interest: finance
     -> {"question": "Markets and central banks, company earnings, or crypto?",
         "label": "Finance", "query": null}
-  Interest: finance / They answered: markets and rates, not crypto
-    -> {"question": null, "label": "Markets and Rates",
-        "query": "\"financial markets\" OR \"central bank\" OR \"interest rates\" NOT crypto"}
+  Interest: finance
+  Q: Markets and central banks, company earnings, or crypto?
+  A: markets and rates, not crypto
+    -> {"question": "Any particular region, or everywhere?",
+        "label": "Markets and Rates", "query": null}
+  Interest: finance
+  Q: Markets and central banks, company earnings, or crypto?
+  A: markets and rates, not crypto
+  Q: Any particular region, or everywhere?
+  A: europe mostly
+    -> {"question": null, "label": "European Markets",
+        "query": "(\"financial markets\" OR \"central bank\" OR \"interest rates\") AND (Europe OR ECB OR eurozone) NOT crypto"}
   Interest: Manchester United
     -> {"question": null, "label": "Manchester United",
-        "query": "\"Manchester United\""}
-  Interest: space
-    -> {"question": "Rocket launches, satellites, or space science missions?",
-        "label": "Space", "query": null}"""
+        "query": "\"Manchester United\""}"""
+
+REFINE_SYSTEM = """You adjust an existing news search query.
+
+Reply with ONE JSON object and nothing else:
+  query  the whole new query
+  note   at most six words saying what changed, e.g. "added reusable rockets"
+
+Keep everything the query already covers unless the instruction says to drop
+it. Use their words. Same syntax as before: "quoted phrases", OR, AND, NOT,
+parentheses. Under 180 characters."""
+
 
 SUMMARY_SYSTEM = """You write one-line news summaries for a Telegram digest.
 For each numbered article you receive, write ONE sentence of at most 20 words
@@ -100,9 +127,18 @@ order. No other text."""
 CHAT_SYSTEM = """You are a news bot having a back-and-forth on Telegram.
 
 Reply with ONE JSON object and nothing else:
-  search  a news search query when answering needs current reporting, else null
-  reply   what to say when you are NOT searching, else null
-  end     true when they are winding the conversation up, else false
+  search    a news search query when answering needs current reporting, else null
+  reply     what to say when you are NOT searching, else null
+  end       true when they are winding the conversation up, else false
+  steer     {"label": <one of their topics>, "change": <what to change>} when
+            they say what they want more or less of in a topic they follow -
+            "I don't care about satellite TV", "more on launch startups".
+            null otherwise.
+  interests names of companies, people, missions or subjects they asked
+            about, as a list, each tagged with the topic of theirs it belongs
+            to: [{"label": <their topic>, "phrase": "nvidia"}]. Only things
+            that clearly sit under a topic they already follow, and only what
+            they actually asked about. [] otherwise.
 
 Search whenever they ask what is happening, what was said, what the numbers
 are, or anything else that needs today's reporting. Use `reply` only for the
@@ -216,6 +252,8 @@ def _intent_from_dict(data: dict) -> Intent | None:
         intent.topic = intent.topic or intent.query
         if not intent.topic:
             return None
+    if intent.action == "retune_topic" and not intent.topic:
+        return None
     if intent.action == "search" and not intent.query:
         intent.query = intent.topic
         if not intent.query:
@@ -246,6 +284,12 @@ _REMOVE_RE = re.compile(
     r"|stop\s+(?:sending|following|tracking)?\s*(?:me\s+)?(?:about\s+)?)(.+)$",
     re.I,
 )
+_RETUNE_RE = re.compile(
+    r"^(?:/retune\s+|retune\s+|(?:re)?tune\s+|fix\s+(?:my\s+)?)(.+?)"
+    r"(?:\s+topic)?$|^(?:the\s+|my\s+)?(.+?)\s+(?:topic\s+)?is\s+"
+    r"(?:too\s+broad|giving\s+me\s+junk|rubbish|useless|wrong)\b",
+    re.I,
+)
 _SEARCH_RE = re.compile(
     r"^(?:/search\s+|search\s+(?:up\s+)?(?:for\s+)?(?:news\s+(?:about|on)\s+)?"
     r"|news\s+(?:about|on)\s+|find\s+(?:news\s+(?:about|on)\s+)?"
@@ -274,6 +318,10 @@ def fallback_intent(message: str) -> Intent:
     if low in {"/help", "help", "what can you do"}:
         return Intent(action="help")
 
+    if m := _RETUNE_RE.match(text):
+        topic = (m.group(1) or m.group(2) or "").strip(" ?!.")
+        if topic:
+            return Intent(action="retune_topic", topic=topic)
     if m := _SEARCH_RE.match(text):
         q = m.group(1).strip(" ?!.")
         return Intent(action="search", query=q, topic=q)
@@ -370,32 +418,37 @@ def query_is_sane(query: str) -> bool:
     )
 
 
-async def plan_topic(
-    ai: AIBackend | None, label: str, *,
-    answer: str | None = None, question_asked: str | None = None,
-) -> TopicPlan:
-    """Narrow an interest into a search query, asking once if it's too broad.
+MAX_TOPIC_QUESTIONS = 4
 
-    With no `answer` the model may reply with a question instead of a query.
-    Once an answer is in hand it must produce the query - the bot asks at most
-    one question per topic, because a second feels like an interrogation.
+
+async def plan_topic(
+    ai: AIBackend | None, label: str, *, transcript: list[dict] | None = None,
+) -> TopicPlan:
+    """Narrow an interest into a search query, asking until it is pinned down.
+
+    `transcript` is the exchange so far as [{"q": ..., "a": ...}]. The model
+    may ask again while there is room, but is told to stop as soon as it could
+    write a good query - and is forced to stop after MAX_TOPIC_QUESTIONS, so
+    adding a topic can never become an interrogation.
     """
+    transcript = list(transcript or [])
+    may_ask = len(transcript) < MAX_TOPIC_QUESTIONS
+    answers = " ".join(str(t.get("a", "")) for t in transcript).strip()
+
     if ai is not None:
         parts = [f"Interest: {label}"]
-        if question_asked:
-            parts.append(f"You asked: {question_asked}")
-        if answer:
-            parts.append(f"They answered: {answer}")
+        for turn in transcript:
+            parts.append(f"Q: {turn.get('q', '')}")
+            parts.append(f"A: {turn.get('a', '')}")
+        if not may_ask:
             parts.append("Write the query now. Do not ask anything further.")
         try:
             raw = await ai.complete(
-                TOPIC_SYSTEM, "\n".join(parts), max_tokens=300
+                TOPIC_SYSTEM, "\n".join(parts), max_tokens=350
             )
             data = extract_json(raw)
             if isinstance(data, dict):
-                plan = _plan_from_dict(
-                    data, label, may_ask=answer is None and not question_asked
-                )
+                plan = _plan_from_dict(data, label, may_ask=may_ask)
                 if plan is not None:
                     return plan
             log.warning("Unparseable topic plan: %s", raw[:200])
@@ -403,7 +456,33 @@ async def plan_topic(
             log.warning("Topic planning unavailable (%s); using a plain query",
                         exc)
 
-    return TopicPlan(label=label, query=plain_query(label, answer))
+    return TopicPlan(label=label, query=plain_query(label, answers or None))
+
+
+async def refine_query(
+    ai: AIBackend | None, label: str, current: str, instruction: str,
+) -> tuple[str, str] | None:
+    """Adjust a saved query. Returns (new query, short note) or None."""
+    if ai is None or not instruction.strip():
+        return None
+    prompt = (f"Topic: {label}\nCurrent query: {current}\n"
+              f"Instruction: {instruction.strip()}")
+    try:
+        raw = await ai.complete(REFINE_SYSTEM, prompt, max_tokens=250)
+    except AIError as exc:
+        log.warning("Query refinement unavailable (%s); leaving it alone", exc)
+        return None
+
+    data = extract_json(raw)
+    if not isinstance(data, dict):
+        log.warning("Unparseable refinement: %s", raw[:200])
+        return None
+    query = str(data.get("query") or "").strip()
+    query = re.sub(r"\s+", " ", query)
+    if not query_is_sane(query) or query == current:
+        return None
+    note = _clean(data.get("note")) or "tightened"
+    return query, note[:60]
 
 
 def _plan_from_dict(data: dict, label: str, *, may_ask: bool) -> TopicPlan | None:
@@ -498,6 +577,8 @@ class ChatTurn:
     search: str | None = None
     reply: str | None = None
     end: bool = False
+    steer: dict | None = None
+    interests: list[dict] = field(default_factory=list)
 
 
 def is_goodbye(text: str) -> bool:
@@ -525,9 +606,14 @@ def _history_text(history: list[dict]) -> str:
 
 
 async def plan_chat_turn(
-    ai: AIBackend | None, history: list[dict], message: str,
+    ai: AIBackend | None, history: list[dict], message: str, *,
+    topics: list[str] | None = None,
 ) -> ChatTurn:
-    """Decide whether this message needs a search, an answer, or an ending."""
+    """Decide whether this message needs a search, an answer, or an ending.
+
+    Also picks up what the conversation says about the topics they follow, so
+    a query can be tightened from an ordinary chat rather than a form.
+    """
     if is_goodbye(message):
         return ChatTurn(end=True)
     if ai is None:
@@ -537,6 +623,8 @@ async def plan_chat_turn(
     prompt = message.strip()
     if past := _history_text(history):
         prompt = f"So far:\n{past}\n\nThem: {message.strip()}"
+    prompt = (f"Their topics: {', '.join(topics) if topics else 'none'}\n\n"
+              + prompt)
     try:
         raw = await ai.complete(CHAT_SYSTEM, prompt, max_tokens=250)
     except AIError as exc:
@@ -550,9 +638,17 @@ async def plan_chat_turn(
     search = _clean(data.get("search"))
     reply = _clean(data.get("reply"))
     end = bool(data.get("end"))
+    steer = data.get("steer") if isinstance(data.get("steer"), dict) else None
+    interests = [
+        {"label": _clean(i.get("label")) or "", "phrase": _clean(i.get("phrase")) or ""}
+        for i in (data.get("interests") or [])
+        if isinstance(i, dict)
+    ]
+    interests = [i for i in interests if i["label"] and i["phrase"]]
     if not (search or reply or end):
-        return ChatTurn(search=message.strip())
-    return ChatTurn(search=search, reply=reply, end=end)
+        return ChatTurn(search=message.strip(), steer=steer, interests=interests)
+    return ChatTurn(search=search, reply=reply, end=end, steer=steer,
+                    interests=interests)
 
 
 _CITATION_RE = re.compile(r"\s*\[(\d{1,2})\]")
