@@ -256,15 +256,25 @@ class BotHandlers:
             parse_mode=ParseMode.HTML, reply_markup=None,
         )
 
+        await self._tell_decision(context, target, status == "approved")
+
+    async def _tell_decision(self, context, user_id: int,
+                             approved: bool) -> bool:
+        """Let someone know either way. False if they couldn't be reached."""
+        text = (
+            "You're in. Say anything and I'll get you set up - I'll ask for "
+            "your timezone, when you want your digest, and what you care "
+            "about." if approved
+            else "The owner didn't approve access, sorry."
+        )
         try:
-            await context.bot.send_message(
-                chat_id=target,
-                text=("You're in. Send /start and I'll set you up."
-                      if status == "approved"
-                      else "The owner didn't approve access, sorry."),
-            )
+            await context.bot.send_message(chat_id=user_id, text=text)
+            return True
         except TelegramError as exc:
-            log.warning("Could not tell %s the decision: %s", target, exc)
+            # Telegram won't let a bot open a conversation, so this is
+            # normal for an id added by hand that never messaged first.
+            log.warning("Could not tell %s the decision: %s", user_id, exc)
+            return False
 
     async def _is_admin(self, user_id: int) -> bool:
         if user_id in set(self.cfg.telegram.admins):
@@ -985,8 +995,12 @@ class BotHandlers:
         await self.db.allow_user(new_id, update.effective_user.id)
         await self.db.decide_access_request(new_id, "approved",
                                             update.effective_user.id)
+        told = await self._tell_decision(context, new_id, approved=True)
         await update.effective_message.reply_text(
-            f"✅ {new_id} can now use the bot. Tell them to send /start."
+            f"✅ {new_id} can now use the bot, and I've told them."
+            if told else
+            f"✅ {new_id} can now use the bot - but I couldn't message them. "
+            "Telegram only lets me reply, so ask them to message me first."
         )
 
     async def cmd_deny(self, update: Update, context) -> None:
@@ -1001,9 +1015,14 @@ class BotHandlers:
             await update.effective_message.reply_text("Usage: /deny 123456789")
             return
         removed = await self.db.deny_user(gone_id)
-        await self.db.decide_access_request(gone_id, "denied",
-                                            update.effective_user.id)
+        decided = await self.db.decide_access_request(
+            gone_id, "denied", update.effective_user.id
+        )
         self.scheduler.cancel(gone_id)
+        # Someone still waiting on an answer gets one; someone being removed
+        # after months of use does not need a notification about it.
+        if decided and not removed:
+            await self._tell_decision(context, gone_id, approved=False)
         await update.effective_message.reply_text(
             f"Removed {gone_id}." if removed
             else f"{gone_id} wasn't in the runtime list "

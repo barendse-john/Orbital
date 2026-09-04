@@ -6,6 +6,8 @@ from pathlib import Path
 
 from newsbot.config import Config, DigestConfig, GNewsConfig, NewsConfig, TelegramConfig
 from newsbot.db import Database
+from telegram.error import TelegramError
+
 from newsbot.handlers import BotHandlers
 
 from tests.test_topics import FakeContext, FakeUpdate, ScriptedAI
@@ -24,6 +26,17 @@ class FakeBot:
 
     async def send_chat_action(self, *a, **kw):
         pass
+
+
+class FakeScheduler:
+    def __init__(self):
+        self.cancelled = []
+
+    def cancel(self, user_id):
+        self.cancelled.append(user_id)
+
+    def schedule(self, user):
+        return True
 
 
 class FakeQueryMessage:
@@ -69,7 +82,7 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
             digest=DigestConfig(default_time="08:00"),
         )
         self.bot = BotHandlers(self.cfg, self.db, ScriptedAI({}), fetcher=None,
-                               digest=None, scheduler=None)
+                               digest=None, scheduler=FakeScheduler())
         self.context = FakeContext()
         self.context.bot = FakeBot()
 
@@ -145,12 +158,48 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(query.message.markup_cleared)
         self.assertIn(STRANGER, await self.db.allowed_user_ids())
 
-    async def test_allow_by_hand_settles_the_request_too(self):
+    async def test_allow_by_hand_settles_the_request_and_tells_them(self):
         await self._stranger_says("hi")
         update = FakeUpdate(OWNER)
-        await self.bot.cmd_allow(update, FakeContext(args=[str(STRANGER)]))
+        context = FakeContext(args=[str(STRANGER)])
+        context.bot = self.context.bot
+        await self.bot.cmd_allow(update, context)
+
         self.assertEqual((await self.db.get_access_request(STRANGER))["status"],
                          "approved")
+        told = [s for s in self.context.bot.sent if s[0] == STRANGER]
+        self.assertIn("You're in", told[0][1])
+        self.assertIn("I've told them", update.effective_message.replies[0])
+
+    async def test_allow_says_so_when_it_cannot_reach_them(self):
+        async def blocked(chat_id, text, **kwargs):
+            raise TelegramError("bot can't initiate conversation")
+
+        context = FakeContext(args=["424242"])
+        context.bot = self.context.bot
+        context.bot.send_message = blocked
+        update = FakeUpdate(OWNER)
+        await self.bot.cmd_allow(update, context)
+        # Telegram only lets a bot reply, so this is the common case for an
+        # id typed in by hand.
+        self.assertIn("couldn't message them",
+                      update.effective_message.replies[0])
+
+    async def test_denying_a_waiting_request_by_hand_tells_them(self):
+        await self._stranger_says("hi")
+        context = FakeContext(args=[str(STRANGER)])
+        context.bot = self.context.bot
+        await self.bot.cmd_deny(FakeUpdate(OWNER), context)
+        told = [s for s in self.context.bot.sent if s[0] == STRANGER]
+        self.assertIn("didn't approve", told[0][1])
+
+    async def test_removing_a_long_standing_user_does_not_message_them(self):
+        await self.db.allow_user(STRANGER)
+        context = FakeContext(args=[str(STRANGER)])
+        context.bot = self.context.bot
+        before = len(self.context.bot.sent)
+        await self.bot.cmd_deny(FakeUpdate(OWNER), context)
+        self.assertEqual(len(self.context.bot.sent), before)
 
     async def test_requests_lists_who_asked(self):
         await self._stranger_says("hi there")
