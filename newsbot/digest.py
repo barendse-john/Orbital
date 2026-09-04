@@ -13,7 +13,7 @@ from telegram.constants import ParseMode
 from telegram.error import Forbidden, TelegramError
 
 from . import formatting, ranking
-from .brain import summarise_articles
+from .brain import background_answer, summarise_articles
 from .db import Database, User
 from .news import Article, NewsFetcher
 
@@ -133,11 +133,20 @@ class DigestService:
 
     async def search_reply(self, user_id: int, query: str, limit: int = 5) -> str:
         """A one-off search, formatted as a single message body."""
-        articles, source = await self.fetcher.search(query, limit=limit)
+        articles, source, window = await self.fetcher.widening_search(
+            query, limit=limit)
         if not articles:
+            # No reporting is not the same as nothing to say.
+            background = await background_answer(self.ai, query)
+            if background:
+                return (
+                    f"No recent news on <b>{formatting.esc(query)}</b>. "
+                    f"Background, which may be out of date:\n\n"
+                    f"{formatting.esc(background)}"
+                )
             return (
-                f"Nothing in the last {self.cfg.news.lookback_hours}h for "
-                f"<b>{formatting.esc(query)}</b>. Try different wording?"
+                f"Nothing in the last month on <b>{formatting.esc(query)}</b>, "
+                "and I don't have much on it myself."
             )
 
         summaries = await summarise_articles(self.ai, articles)
@@ -147,9 +156,9 @@ class DigestService:
         await self.db.mark_sent(user_id, [(a.key, a.url) for a in articles])
 
         header = f"🔎 <b>{formatting.esc(query)}</b>"
+        if window != f"{self.cfg.news.lookback_hours}h":
+            header += f" <i>- nothing today, so the last {window}</i>"
         body = "\n".join(formatting.article_line(a) for a in articles)
-        if source == "rss":
-            body += "\n\n<i>via Google News RSS</i>"
         return f"{header}\n{body}"
 
     async def _send(self, bot, chat_id: int, text: str, *,

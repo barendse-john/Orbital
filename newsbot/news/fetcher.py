@@ -80,6 +80,27 @@ class NewsFetcher:
             log.error("RSS failed for %r: %s", query, exc)
             return [], "none"
 
+    async def widening_search(
+        self, query: str, *, limit: int | None = None,
+    ) -> tuple[list[Article], str, str]:
+        """Look further back until something turns up.
+
+        A 24h window is right for a digest and wrong for a question: "tell me
+        about King Oyo of Uganda" has no reporting today and plenty in the
+        last month. Returns (articles, source, how far back it had to go).
+        Each widening costs another search, so this is only for questions
+        someone asked, never for the digest.
+        """
+        base = self.cfg.lookback_hours
+        windows = [(base, f"{base}h"), (24 * 7, "week"), (24 * 30, "month")]
+        for hours, label in windows:
+            articles, source = await self.search(
+                query, limit=limit, lookback_hours=hours
+            )
+            if articles:
+                return articles, source, label
+        return [], "none", windows[-1][1]
+
     async def search_unseen(
         self, user_id: int, query: str, *, limit: int | None = None,
     ) -> tuple[list[Article], str]:

@@ -217,3 +217,95 @@ class IntentWithModelTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WideningSearchTests(unittest.IsolatedAsyncioTestCase):
+    """A question is not a digest: look further back before giving up."""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = Database(Path(self.tmp.name) / "t.db")
+        self.db.connect()
+        self.cfg = Config(news=NewsConfig(gnews=GNewsConfig(api_key="")),
+                          digest=DigestConfig())
+        self.fetcher = NewsFetcher(self.cfg.news, self.db)
+        self.windows = []
+
+    async def asyncTearDown(self):
+        await self.fetcher.close()
+        self.db.close()
+        self.tmp.cleanup()
+
+    def _source(self, found_at_hours):
+        windows = self.windows
+
+        class Source:
+            api_key = ""
+            enabled = False
+
+            async def search(inner, query, *, limit=5, lookback_hours=24):
+                windows.append(lookback_hours)
+                if lookback_hours < found_at_hours:
+                    return []
+                return [Article(title="King Oyo turns 34", url="https://a/1",
+                                source="Daily Monitor")]
+
+            async def close(inner):
+                pass
+
+        return Source()
+
+    async def test_it_stops_as_soon_as_something_turns_up(self):
+        self.fetcher.rss = self._source(0)
+        articles, _source, window = await self.fetcher.widening_search("king oyo")
+        self.assertTrue(articles)
+        self.assertEqual(window, "24h")
+        self.assertEqual(self.windows, [24])  # no wasted searches
+
+    async def test_it_reaches_back_a_month_when_today_has_nothing(self):
+        self.fetcher.rss = self._source(24 * 30)
+        articles, _source, window = await self.fetcher.widening_search("king oyo")
+        self.assertTrue(articles)
+        self.assertEqual(window, "month")
+        self.assertEqual(self.windows, [24, 168, 720])
+
+    async def test_a_month_of_nothing_is_reported_as_nothing(self):
+        self.fetcher.rss = self._source(99999)
+        articles, source, _window = await self.fetcher.widening_search("king oyo")
+        self.assertEqual(articles, [])
+        self.assertEqual(source, "none")
+
+
+class BackgroundFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = Database(Path(self.tmp.name) / "t.db")
+        self.db.connect()
+        self.cfg = Config(news=NewsConfig(gnews=GNewsConfig(api_key="")),
+                          digest=DigestConfig())
+        self.fetcher = NewsFetcher(self.cfg.news, self.db)
+        self.fetcher.rss = StubSource([])
+
+    async def asyncTearDown(self):
+        await self.fetcher.close()
+        self.db.close()
+        self.tmp.cleanup()
+
+    async def test_no_reporting_still_gets_an_answer(self):
+        class Knowing(StubAI):
+            async def complete(inner, system, user, *, max_tokens=600,
+                               temperature=0.0, attempts=None):
+                return ("King Oyo Nyimba Kabamba Iguru Rukidi IV has reigned "
+                        "over Toro since 1995, crowned at three.")
+
+        digest = DigestService(self.db, self.fetcher, Knowing(), self.cfg)
+        body = await digest.search_reply(7, "King Oyo Uganda")
+        self.assertIn("reigned", body)
+        # Framed as background, never passed off as reporting.
+        self.assertIn("may be out of date", body)
+
+    async def test_it_says_so_when_it_knows_nothing_either(self):
+        digest = DigestService(self.db, self.fetcher, StubAI(fail=True),
+                               self.cfg)
+        body = await digest.search_reply(7, "King Oyo Uganda")
+        self.assertIn("don't have much on it", body)

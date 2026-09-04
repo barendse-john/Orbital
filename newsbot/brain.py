@@ -165,6 +165,19 @@ instead of padding.
 Tone: say the thing and stop. No sign-offs, no "let me know if you need
 anything", no unprompted follow-up questions."""
 
+BACKGROUND_SYSTEM = """Someone asked a news bot about something, and there
+is no recent reporting on it. Answer from your own knowledge instead.
+
+Three or four sentences of substance: who or what it is, why it matters, the
+dates and numbers you are sure of. Say plainly when something is contested or
+when you are unsure, and never invent a fact to fill a gap - "I don't have
+much on that" is a better answer than a confident guess.
+
+You are writing background, not news. Do not pretend to know what has
+happened recently, and do not offer to look again.
+
+Tone: say the thing and stop. No sign-offs, no offers of further help."""
+
 TIMEZONE_SYSTEM = """The user names a place. Reply with the matching IANA
 timezone identifier and nothing else, e.g. "Europe/Amsterdam". If the place is
 ambiguous or unknown, reply exactly "UNKNOWN"."""
@@ -506,6 +519,26 @@ def _plan_from_dict(data: dict, label: str, *, may_ask: bool) -> TopicPlan | Non
         log.warning("Discarding malformed query %r", query[:120])
         return TopicPlan(label=chosen, query=plain_query(label))
     return TopicPlan(label=chosen, query=query)
+
+
+async def background_answer(
+    ai: AIBackend | None, question: str,
+) -> str | None:
+    """What the model already knows, for when the news has nothing.
+
+    Kept strictly separate from the news path: this is presented to the user
+    as background that may be out of date, never as reporting.
+    """
+    if ai is None:
+        return None
+    try:
+        answer = await ai.complete(
+            BACKGROUND_SYSTEM, question.strip(), max_tokens=400, attempts=1
+        )
+    except AIError as exc:
+        log.warning("Background answer unavailable (%s)", exc)
+        return None
+    return answer.strip() or None
 
 
 # --------------------------------------------------------------------------

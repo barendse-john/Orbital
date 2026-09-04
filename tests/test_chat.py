@@ -33,6 +33,10 @@ class FakeFetcher:
         self.queries.append(query)
         return self.articles[:limit], "gnews"
 
+    async def widening_search(self, query, *, limit=5):
+        articles, source = await self.search(query, limit=limit)
+        return articles, source, "24h"
+
 
 class TypingIndicatorTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_timed_out_typing_action_does_not_eat_the_reply(self):

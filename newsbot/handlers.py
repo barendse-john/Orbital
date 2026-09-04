@@ -704,10 +704,17 @@ class BotHandlers:
     async def _answer_from_news(self, history: list[dict], text: str,
                                 query: str) -> tuple[str, str]:
         """(message to send, plain version for the transcript)."""
-        articles, _source = await self.fetcher.search(query, limit=4)
+        articles, _source, window = await self.fetcher.widening_search(
+            query, limit=4)
         if not articles:
-            miss = (f"Nothing in the last {self.cfg.news.lookback_hours}h on "
-                    f"<b>{esc(query)}</b>.")
+            # No reporting is not the same as nothing to say.
+            background = await background_answer(self.ai, text)
+            if background:
+                shown = (f"No recent news on <b>{esc(query)}</b>. Background, "
+                         f"which may be out of date:\n\n{esc(background)}")
+                return shown, background
+            miss = (f"Nothing in the last month on <b>{esc(query)}</b>, and I "
+                    "don't have much on it myself.")
             return miss, f"nothing found on {query}"
 
         summaries = await summarise_articles(self.ai, articles, attempts=1)
