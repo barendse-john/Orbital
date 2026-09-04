@@ -245,3 +245,24 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CommandMenuTests(unittest.TestCase):
+    def test_every_advertised_command_is_actually_registered(self):
+        import inspect
+
+        from newsbot.__main__ import COMMANDS
+        from newsbot.handlers import BotHandlers
+
+        registered = inspect.getsource(BotHandlers.register)
+        for command in COMMANDS:
+            self.assertIn(f'CommandHandler("{command.command}"', registered,
+                          f"/{command.command} is in the menu but has no handler")
+
+    def test_the_menu_offers_the_commands_worth_finding(self):
+        from newsbot.__main__ import COMMANDS
+
+        offered = {c.command for c in COMMANDS}
+        # These existed and worked for days, but nothing advertised them.
+        for command in ("retune", "requests", "users"):
+            self.assertIn(command, offered)

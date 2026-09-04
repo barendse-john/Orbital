@@ -21,17 +21,23 @@ from .scheduler import DigestScheduler
 
 log = logging.getLogger("newsbot")
 
+# Telegram's command menu. A command still works if it is missing here, but
+# nobody discovers it - /retune, /requests and /users were invisible for
+# exactly that reason.
 COMMANDS = [
     BotCommand("topics", "What you're following"),
     BotCommand("add", "Follow a topic"),
+    BotCommand("retune", "Narrow what a topic searches for"),
     BotCommand("remove", "Stop following a topic"),
     BotCommand("search", "Search the news now"),
-    BotCommand("digest", "Send today's digest"),
     BotCommand("time", "Set your digest time"),
     BotCommand("timezone", "Set your timezone"),
     BotCommand("pause", "Mute the daily digest"),
     BotCommand("resume", "Unmute the daily digest"),
     BotCommand("status", "Your settings"),
+    BotCommand("users", "Who can use the bot (admins)"),
+    BotCommand("requests", "Who has asked to join (admins)"),
+    BotCommand("digest", "Send the digest now (admins)"),
     BotCommand("help", "How to talk to me"),
 ]
 
