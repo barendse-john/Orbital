@@ -262,9 +262,7 @@ class BotHandlers:
                              approved: bool) -> bool:
         """Let someone know either way. False if they couldn't be reached."""
         text = (
-            "You're in. Say anything and I'll get you set up - I'll ask for "
-            "your timezone, when you want your digest, and what you care "
-            "about." if approved
+            "You're in. Say anything and I'll get you set up." if approved
             else "The owner didn't approve access, sorry."
         )
         try:
@@ -389,8 +387,10 @@ class BotHandlers:
             self.scheduler.schedule(user)
             await update.effective_message.reply_text(
                 f"All set - digest every day at <b>{esc(hhmm)}</b>.\n\n"
-                "Now tell me what to follow: <i>\"i like Manchester United\"</i>, "
-                "<i>\"follow satellite launches\"</i>.\n\n" + HELP_TEXT,
+                "Now tell me what you care about, however you'd say it out "
+                "loud: <i>\"i like Manchester United\"</i>, <i>\"follow "
+                "satellite launches\"</i>, <i>\"keep me posted on the "
+                "ECB\"</i>.\n\n<i>/help if you ever want the full list.</i>",
                 parse_mode=ParseMode.HTML,
             )
             return True
@@ -743,8 +743,12 @@ class BotHandlers:
         if not user.timezone:
             await self._begin_onboarding(update, context)
             return
+        topics = await self.db.list_topics(tg.id)
+        following = ", ".join(esc(t.label) for t in topics)
         await update.effective_message.reply_text(
-            f"Welcome back, {esc(tg.first_name or 'there')}.\n\n" + HELP_TEXT,
+            f"Welcome back, {esc(tg.first_name or 'there')}."
+            + (f"\n\nStill following: {following}." if following else "")
+            + "\n\n<i>/help for what I can do.</i>",
             parse_mode=ParseMode.HTML,
         )
 

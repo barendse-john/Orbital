@@ -170,6 +170,8 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         told = [s for s in self.context.bot.sent if s[0] == STRANGER]
         self.assertIn("You're in", told[0][1])
         self.assertIn("I've told them", update.effective_message.replies[0])
+        # A first message is not the moment for a list of slash commands.
+        self.assertNotIn("/topics", told[0][1])
 
     async def test_allow_says_so_when_it_cannot_reach_them(self):
         async def blocked(chat_id, text, **kwargs):

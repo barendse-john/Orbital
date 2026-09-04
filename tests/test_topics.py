@@ -9,7 +9,7 @@ from newsbot.ai.base import AIBackend, AIError
 from newsbot.brain import TopicPlan, plain_query, plan_topic, query_is_sane, quote
 from newsbot.config import Config, DigestConfig, GNewsConfig, NewsConfig, TelegramConfig
 from newsbot.db import Database
-from newsbot.handlers import BotHandlers, _is_skip
+from newsbot.handlers import STAGE, STAGE_TIME, BotHandlers, _is_skip
 
 
 class ScriptedAI(AIBackend):
@@ -142,6 +142,57 @@ class FakeContext:
         self.bot = FakeBot()
         self.user_data = {}
         self.args = args or []
+
+
+class OnboardingTests(unittest.IsolatedAsyncioTestCase):
+    """A new person gets one instruction, not the manual."""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = Database(Path(self.tmp.name) / "t.db")
+        self.db.connect()
+        self.cfg = Config(
+            telegram=TelegramConfig(token="t", whitelist=[7]),
+            news=NewsConfig(gnews=GNewsConfig(api_key="")),
+            digest=DigestConfig(default_time="08:00"),
+        )
+        self.bot = BotHandlers(self.cfg, self.db, ScriptedAI({}), None, None,
+                               _NullScheduler())
+        await self.db.ensure_user(7, "john", "John")
+
+    async def asyncTearDown(self):
+        self.db.close()
+        self.tmp.cleanup()
+
+    async def test_finishing_setup_does_not_dump_every_command(self):
+        context = FakeContext()
+        context.user_data[STAGE] = STAGE_TIME
+        await self.db.set_timezone(7, "Europe/Amsterdam")
+        update = FakeUpdate(7, "10:00")
+        await self.bot.on_text(update, context)
+
+        body = update.effective_message.replies[-1]
+        self.assertIn("All set", body)
+        self.assertIn("Manchester United", body)
+        self.assertIn("/help", body)
+        for command in ("/topics", "/retune", "/timezone", "/pause"):
+            self.assertNotIn(command, body)
+
+    async def test_help_still_has_everything(self):
+        await self.db.set_timezone(7, "Europe/Amsterdam")
+        update = FakeUpdate(7, "/help")
+        await self.bot.cmd_help(update, FakeContext())
+        body = update.effective_message.replies[0]
+        for command in ("/topics", "/retune", "/timezone", "/pause"):
+            self.assertIn(command, body)
+
+
+class _NullScheduler:
+    def schedule(self, user):
+        return True
+
+    def cancel(self, user_id):
+        pass
 
 
 class ConversationTests(unittest.IsolatedAsyncioTestCase):
