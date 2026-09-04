@@ -34,6 +34,44 @@ class FakeFetcher:
         return self.articles[:limit], "gnews"
 
 
+class TypingIndicatorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_timed_out_typing_action_does_not_eat_the_reply(self):
+        import tempfile
+        from pathlib import Path as _Path
+
+        from telegram.error import TimedOut
+
+        from newsbot.config import (Config, DigestConfig, GNewsConfig,
+                                    NewsConfig, TelegramConfig)
+        from newsbot.db import Database
+        from newsbot.handlers import BotHandlers
+
+        tmp = tempfile.TemporaryDirectory()
+        db = Database(_Path(tmp.name) / "t.db")
+        db.connect()
+        cfg = Config(telegram=TelegramConfig(token="t", whitelist=[7]),
+                     news=NewsConfig(gnews=GNewsConfig(api_key="")),
+                     digest=DigestConfig(default_time="08:00"))
+        bot = BotHandlers(cfg, db, ScriptedAI({"action": "list_topics"}),
+                          FakeFetcher(ARTICLES), digest=None, scheduler=None)
+        await db.ensure_user(7, "john", "John")
+        await db.set_timezone(7, "Europe/Amsterdam")
+
+        context = FakeContext()
+
+        async def boom(*a, **kw):
+            raise TimedOut("Timed out")
+
+        context.bot.send_chat_action = boom
+
+        update = FakeUpdate(7, "what am I following")
+        await bot.on_text(update, context)
+        # The handler got past the cosmetic call and answered.
+        self.assertTrue(update.effective_message.replies)
+        db.close()
+        tmp.cleanup()
+
+
 class GoodbyeTests(unittest.TestCase):
     def test_closing_words_are_recognised_without_a_model(self):
         for text in ("thanks", "ok thanks that's all", "bye", "never mind",

@@ -123,6 +123,21 @@ class BotHandlers:
         )
         app.add_error_handler(self.on_error)
 
+    # ---------------------------------------------------------------- typing
+
+    @staticmethod
+    async def _typing(context, chat_id: int) -> None:
+        """Show "typing...", and never let it matter.
+
+        A bare `await send_chat_action(...)` is a network call, and on a
+        flaky link it raises TimedOut - which aborted the handler before it
+        answered, so the bot looked frozen over a cosmetic detail.
+        """
+        try:
+            await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
+        except TelegramError as exc:
+            log.debug("Could not show typing to %s: %s", chat_id, exc)
+
     # ------------------------------------------------------- access control
 
     async def _allowed(self, update: Update, context=None) -> bool:
@@ -412,7 +427,7 @@ class BotHandlers:
                 return
             await self.db.end_chat(tg.id)
 
-        await context.bot.send_chat_action(tg.id, ChatAction.TYPING)
+        await self._typing(context, tg.id)
         topics = await self.db.list_topics(tg.id)
         intent = await parse_intent(self.ai, text, topics=[t.label for t in topics])
         await self._dispatch(update, context, intent)
@@ -483,7 +498,7 @@ class BotHandlers:
             )
             return
 
-        await context.bot.send_chat_action(user_id, ChatAction.TYPING)
+        await self._typing(context, user_id)
         plan = await plan_topic(self.ai, label)
         if plan.question:
             await self._ask_about_topic(update, label, plan.question, [])
@@ -505,7 +520,7 @@ class BotHandlers:
                                     pending: tuple, text: str) -> None:
         label, question, transcript = pending
         user_id = update.effective_user.id
-        await context.bot.send_chat_action(user_id, ChatAction.TYPING)
+        await self._typing(context, user_id)
 
         if _is_skip(text):
             answers = " ".join(str(t.get("a", "")) for t in transcript)
@@ -576,8 +591,7 @@ class BotHandlers:
         )
 
     async def _run_search(self, update: Update, context, query: str) -> None:
-        await context.bot.send_chat_action(update.effective_user.id,
-                                           ChatAction.TYPING)
+        await self._typing(context, update.effective_user.id)
         body = await self.digest.search_reply(
             update.effective_user.id, query,
             limit=self.cfg.news.max_articles_per_topic,
@@ -609,7 +623,7 @@ class BotHandlers:
     async def _continue_chat(self, update: Update, context,
                              history: list[dict], text: str) -> None:
         user_id = update.effective_user.id
-        await context.bot.send_chat_action(user_id, ChatAction.TYPING)
+        await self._typing(context, user_id)
 
         topics = await self.db.list_topics(user_id)
         turn = await plan_chat_turn(self.ai, history, text,
@@ -703,7 +717,7 @@ class BotHandlers:
         user = await self.db.get_user(update.effective_user.id)
         if user is None:
             return
-        await context.bot.send_chat_action(user.user_id, ChatAction.TYPING)
+        await self._typing(context, user.user_id)
         await self.digest.send_digest(context.bot, user, manual=True)
 
     # ------------------------------------------------------------ commands
@@ -775,7 +789,7 @@ class BotHandlers:
             )
             return
 
-        await context.bot.send_chat_action(user_id, ChatAction.TYPING)
+        await self._typing(context, user_id)
         plan = await plan_topic(self.ai, match.label)
         if plan.question:
             await self._ask_about_topic(update, match.label, plan.question, [])

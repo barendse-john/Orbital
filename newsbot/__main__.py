@@ -9,6 +9,7 @@ import sys
 
 from telegram import BotCommand
 from telegram.ext import Application, ApplicationBuilder
+from telegram.request import HTTPXRequest
 
 from .ai import build_backend
 from .config import Config, ConfigError
@@ -76,9 +77,19 @@ def build_application(cfg: Config) -> Application:
         db.close()
         log.info("Shut down cleanly")
 
+    # PTB's defaults are about five seconds. A domestic connection to
+    # Telegram is not reliably that quick, and a timeout here surfaces as the
+    # bot ignoring you.
+    request = HTTPXRequest(connect_timeout=15.0, read_timeout=25.0,
+                           write_timeout=25.0, pool_timeout=5.0)
+    getter = HTTPXRequest(connect_timeout=15.0, read_timeout=25.0,
+                          write_timeout=25.0, pool_timeout=5.0)
+
     return (
         ApplicationBuilder()
         .token(cfg.telegram.token)
+        .request(request)
+        .get_updates_request(getter)
         .post_init(post_init)
         .post_shutdown(post_shutdown)
         .build()
