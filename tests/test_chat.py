@@ -9,6 +9,7 @@ from newsbot.brain import ChatTurn, is_goodbye, link_citations, plan_chat_turn
 from newsbot.config import Config, DigestConfig, GNewsConfig, NewsConfig, TelegramConfig
 from newsbot.db import Database
 from newsbot.handlers import BotHandlers
+from newsbot.news.fetcher import SearchTrace
 from newsbot.news.models import Article
 
 from tests.test_topics import FakeContext, FakeUpdate, ScriptedAI
@@ -33,9 +34,15 @@ class FakeFetcher:
         self.queries.append(query)
         return self.articles[:limit], "gnews"
 
-    async def widening_search(self, query, *, limit=5):
+    async def widening_search(self, query, *, limit=5, alternatives=None):
         articles, source = await self.search(query, limit=limit)
-        return articles, source, "24h"
+        if not articles and alternatives is not None:
+            for candidate in await alternatives():
+                articles, source = await self.search(candidate, limit=limit)
+                if articles:
+                    return articles, source, SearchTrace(
+                        candidate, "month", rewritten_from=query)
+        return articles, source, SearchTrace(query, "24h")
 
 
 class TypingIndicatorTests(unittest.IsolatedAsyncioTestCase):

@@ -281,6 +281,32 @@ topics.
 
 ---
 
+## When a question finds nothing
+
+News APIs match words that literally appear in headlines, and they AND the
+terms together. That works for named things - "Manchester United", "Starship"
+- and fails for themes, because no headline contains "top businesses invest".
+Since the intent parser compresses whatever you typed into a short phrase,
+thematic questions used to come back empty and fall straight through to the
+model's own knowledge.
+
+A question that finds nothing now widens along two axes:
+
+1. **Time** - the last 24h, then the week, then the month. Right for a real
+   subject with sparse coverage.
+2. **The query itself** - the model rewrites it into terms that actually
+   appear in coverage: *"where are corporations investing"* becomes
+   `Nvidia data center spending`, `capital expenditure earnings`. Each
+   candidate is tried against the month.
+
+The rewrite is only requested once the original query has already come up
+empty, so it costs nothing on the common path. Without a model (Ollama down,
+no API key) it falls back to dropping filler words and ORing what is left.
+
+When a rewrite is what found the articles, the reply says so - otherwise
+results that look tangential read as a bug rather than a broadened search.
+Only after all of that does it answer from background knowledge.
+
 ## Project layout
 
 ```

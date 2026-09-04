@@ -257,21 +257,22 @@ class WideningSearchTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_it_stops_as_soon_as_something_turns_up(self):
         self.fetcher.rss = self._source(0)
-        articles, _source, window = await self.fetcher.widening_search("king oyo")
+        articles, _source, trace = await self.fetcher.widening_search("king oyo")
         self.assertTrue(articles)
-        self.assertEqual(window, "24h")
+        self.assertEqual(trace.window, "24h")
+        self.assertFalse(trace.was_rewritten)
         self.assertEqual(self.windows, [24])  # no wasted searches
 
     async def test_it_reaches_back_a_month_when_today_has_nothing(self):
         self.fetcher.rss = self._source(24 * 30)
-        articles, _source, window = await self.fetcher.widening_search("king oyo")
+        articles, _source, trace = await self.fetcher.widening_search("king oyo")
         self.assertTrue(articles)
-        self.assertEqual(window, "month")
+        self.assertEqual(trace.window, "month")
         self.assertEqual(self.windows, [24, 168, 720])
 
     async def test_a_month_of_nothing_is_reported_as_nothing(self):
         self.fetcher.rss = self._source(99999)
-        articles, source, _window = await self.fetcher.widening_search("king oyo")
+        articles, source, _trace = await self.fetcher.widening_search("king oyo")
         self.assertEqual(articles, [])
         self.assertEqual(source, "none")
 

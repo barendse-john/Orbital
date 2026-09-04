@@ -165,6 +165,30 @@ instead of padding.
 Tone: say the thing and stop. No sign-offs, no "let me know if you need
 anything", no unprompted follow-up questions."""
 
+SEARCH_TERMS_SYSTEM = """A news search found nothing, and you are
+rewriting the query so it does.
+
+News search matches words that literally appear in headlines and article
+text. Abstract phrasing never matches: no headline contains the words "top
+businesses invest" or "corporate investment trends". Named things do:
+companies, people, places, products, institutions, and the standard phrases
+the trade press actually prints.
+
+Given the question and the failed query, reply with a JSON array of 2 or 3
+better queries, most specific first. Each is 2-5 words. Rules:
+- Name the entities the story would be about. "where are corporations
+  investing" -> ["Nvidia data center spending", "capital expenditure
+  earnings", "AI infrastructure investment"]
+- Use the industry's own vocabulary: capex, earnings, layoffs, funding
+  round, rate cut, guidance.
+- You may use OR between alternatives in one query: "ECB OR Fed rate"
+- No quotes inside the strings, no punctuation, no boolean NOT.
+- If the question is already about a named thing, return spellings and
+  related terms: "King Oyo" -> ["King Oyo Uganda", "Toro kingdom"]
+
+Reply with the JSON array and nothing else."""
+
+
 BACKGROUND_SYSTEM = """Someone asked a news bot about something, and there
 is no recent reporting on it. Answer from your own knowledge instead.
 
@@ -519,6 +543,72 @@ def _plan_from_dict(data: dict, label: str, *, may_ask: bool) -> TopicPlan | Non
         log.warning("Discarding malformed query %r", query[:120])
         return TopicPlan(label=chosen, query=plain_query(label))
     return TopicPlan(label=chosen, query=query)
+
+
+_STOPWORDS = {
+    "the", "a", "an", "of", "in", "on", "at", "to", "for", "and", "or", "is",
+    "are", "was", "were", "be", "been", "what", "which", "who", "where",
+    "when", "why", "how", "top", "best", "right", "now", "recent", "recently",
+    "latest", "news", "about", "into", "their", "there", "they", "them",
+    "my", "me", "i", "you", "your", "we", "us", "our", "it", "its", "this",
+    "that", "these", "those", "some", "any", "all", "more", "most", "new",
+}
+
+
+def relax_query(query: str) -> list[str]:
+    """Mechanical fallback for when no model is available.
+
+    Drops filler words and ORs what is left, so at least one term can match
+    instead of requiring all of them.
+    """
+    words = [w for w in re.findall(r"[A-Za-z0-9']+", query)
+             if w.lower() not in _STOPWORDS and len(w) > 2]
+    if len(words) < 2:
+        return []
+    # Longer words carry more meaning than short ones.
+    ranked = sorted(words, key=len, reverse=True)[:3]
+    return [" OR ".join(ranked)]
+
+
+async def alternative_queries(
+    ai: AIBackend | None, question: str, failed_query: str, *, limit: int = 3,
+) -> list[str]:
+    """Rewrite a query that found nothing into ones that might.
+
+    The intent parser compresses questions into short phrases, which works
+    for named things ("Manchester United") and fails for themes ("top
+    businesses invest") because no headline contains those words together.
+    This asks the model for terms that actually appear in coverage.
+    """
+    if ai is None:
+        return relax_query(failed_query)[:limit]
+
+    prompt = f"Question: {question}\nFailed query: {failed_query}"
+    try:
+        raw = await ai.complete(
+            SEARCH_TERMS_SYSTEM, prompt, max_tokens=150, attempts=1
+        )
+    except AIError as exc:
+        log.warning("Query rewrite unavailable (%s); relaxing mechanically", exc)
+        return relax_query(failed_query)[:limit]
+
+    data = extract_json(raw)
+    if not isinstance(data, list):
+        log.warning("Unparseable query rewrite: %s", raw[:200])
+        return relax_query(failed_query)[:limit]
+
+    out: list[str] = []
+    seen = {failed_query.strip().lower()}
+    for item in data:
+        candidate = re.sub(r'["\'\\]', " ", str(item))
+        candidate = re.sub(r"\s+", " ", candidate).strip()
+        if not candidate or candidate.lower() in seen:
+            continue
+        seen.add(candidate.lower())
+        out.append(candidate)
+        if len(out) >= limit:
+            break
+    return out or relax_query(failed_query)[:limit]
 
 
 async def background_answer(

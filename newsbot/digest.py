@@ -13,7 +13,7 @@ from telegram.constants import ParseMode
 from telegram.error import Forbidden, TelegramError
 
 from . import formatting, ranking
-from .brain import background_answer, summarise_articles
+from .brain import alternative_queries, background_answer, summarise_articles
 from .db import Database, User
 from .news import Article, NewsFetcher
 
@@ -131,10 +131,23 @@ class DigestService:
         log.info("Sent %d articles to %s", count, user.user_id)
         return count
 
-    async def search_reply(self, user_id: int, query: str, limit: int = 5) -> str:
-        """A one-off search, formatted as a single message body."""
-        articles, source, window = await self.fetcher.widening_search(
-            query, limit=limit)
+    async def search_reply(
+        self, user_id: int, query: str, limit: int = 5, *,
+        question: str | None = None,
+    ) -> str:
+        """A one-off search, formatted as a single message body.
+
+        `question` is what the user actually typed; `query` is the intent
+        parser's compressed version. The rewrite works far better from the
+        full question, so pass it when you have it.
+        """
+        asked = question or query
+
+        async def rewrite() -> list[str]:
+            return await alternative_queries(self.ai, asked, query)
+
+        articles, source, trace = await self.fetcher.widening_search(
+            query, limit=limit, alternatives=rewrite)
         if not articles:
             # No reporting is not the same as nothing to say.
             background = await background_answer(self.ai, query)
@@ -156,8 +169,13 @@ class DigestService:
         await self.db.mark_sent(user_id, [(a.key, a.url) for a in articles])
 
         header = f"🔎 <b>{formatting.esc(query)}</b>"
-        if window != f"{self.cfg.news.lookback_hours}h":
-            header += f" <i>- nothing today, so the last {window}</i>"
+        if trace.was_rewritten:
+            # Say what was actually searched - otherwise results that look
+            # tangential read as a bug rather than a broadened search.
+            header += f" <i>- nothing under that, so I searched " \
+                      f"\"{formatting.esc(trace.query)}\"</i>"
+        elif trace.window != f"{self.cfg.news.lookback_hours}h":
+            header += f" <i>- nothing today, so the last {trace.window}</i>"
         body = "\n".join(formatting.article_line(a) for a in articles)
         return f"{header}\n{body}"
 

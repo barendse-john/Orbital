@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import logging
 
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+
 from ..config import NewsConfig
 from ..db import Database
 from .gnews import (GNewsClient, GNewsError, GNewsQuotaExceeded,
@@ -21,6 +24,19 @@ from .models import Article
 from .rss import GoogleNewsRSS, RSSError
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class SearchTrace:
+    """How a search was eventually satisfied, so the reply can say so."""
+
+    query: str
+    window: str
+    rewritten_from: str | None = None
+
+    @property
+    def was_rewritten(self) -> bool:
+        return self.rewritten_from is not None
 
 
 class NewsFetcher:
@@ -82,24 +98,54 @@ class NewsFetcher:
 
     async def widening_search(
         self, query: str, *, limit: int | None = None,
-    ) -> tuple[list[Article], str, str]:
-        """Look further back until something turns up.
+        alternatives: "Callable[[], Awaitable[list[str]]] | None" = None,
+    ) -> tuple[list[Article], str, SearchTrace]:
+        """Widen along both axes until something turns up.
 
-        A 24h window is right for a digest and wrong for a question: "tell me
-        about King Oyo of Uganda" has no reporting today and plenty in the
-        last month. Returns (articles, source, how far back it had to go).
-        Each widening costs another search, so this is only for questions
-        someone asked, never for the digest.
+        Time first: "tell me about King Oyo of Uganda" has no reporting today
+        and plenty in the last month.
+
+        Then the query itself, which is the axis that actually matters for
+        thematic questions. The intent parser compresses "where are
+        corporations investing" into "corporate investment trends", and news
+        APIs AND those terms together - no headline contains all three, so
+        widening the window just fails three times more slowly. `alternatives`
+        supplies rewritten queries, and is only awaited once the original has
+        already come up empty, so the rewrite costs nothing on the common
+        path.
+
+        Each attempt costs a search request, so this is for questions someone
+        asked, never for the digest.
         """
         base = self.cfg.lookback_hours
-        windows = [(base, f"{base}h"), (24 * 7, "week"), (24 * 30, "month")]
-        for hours, label in windows:
+        month = 24 * 30
+
+        for hours, label in [(base, f"{base}h"), (24 * 7, "week"), (month, "month")]:
             articles, source = await self.search(
                 query, limit=limit, lookback_hours=hours
             )
             if articles:
-                return articles, source, label
-        return [], "none", windows[-1][1]
+                return articles, source, SearchTrace(query, label)
+
+        if alternatives is None:
+            return [], "none", SearchTrace(query, "month")
+
+        try:
+            candidates = await alternatives()
+        except Exception:  # noqa: BLE001 - a failed rewrite is not a failed search
+            log.exception("Query rewrite failed for %r", query)
+            candidates = []
+
+        for candidate in candidates:
+            log.info("Retrying %r as %r", query, candidate)
+            articles, source = await self.search(
+                candidate, limit=limit, lookback_hours=month
+            )
+            if articles:
+                return articles, source, SearchTrace(candidate, "month",
+                                                     rewritten_from=query)
+
+        return [], "none", SearchTrace(query, "month")
 
     async def search_unseen(
         self, user_id: int, query: str, *, limit: int | None = None,

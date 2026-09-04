@@ -30,7 +30,8 @@ from telegram.ext import (
 )
 
 from . import timezones
-from .brain import (MAX_TOPIC_QUESTIONS, Intent, TopicPlan, link_citations,
+from .brain import (MAX_TOPIC_QUESTIONS, Intent, TopicPlan,
+                    alternative_queries, background_answer, link_citations,
                     normalise_time, parse_intent, plain_query,
                     plan_chat_turn, plan_topic, refine_query,
                     resolve_timezone, summarise_articles, valid_timezone,
@@ -463,7 +464,10 @@ class BotHandlers:
                 else "You weren't following anything."
             )
         elif action == "search" and intent.query:
-            await self._run_search(update, context, intent.query)
+            await self._run_search(
+                update, context, intent.query,
+                question=(update.effective_message.text or "").strip() or None,
+            )
         elif action == "set_time" and intent.time:
             await self._set_time(update, intent.time)
         elif action == "set_timezone" and intent.timezone:
@@ -601,11 +605,13 @@ class BotHandlers:
             parse_mode=ParseMode.HTML,
         )
 
-    async def _run_search(self, update: Update, context, query: str) -> None:
+    async def _run_search(self, update: Update, context, query: str, *,
+                          question: str | None = None) -> None:
         await self._typing(context, update.effective_user.id)
         body = await self.digest.search_reply(
             update.effective_user.id, query,
             limit=self.cfg.news.max_articles_per_topic,
+            question=question,
         )
         await update.effective_message.reply_text(
             body, parse_mode=ParseMode.HTML, disable_web_page_preview=True
@@ -705,8 +711,11 @@ class BotHandlers:
     async def _answer_from_news(self, history: list[dict], text: str,
                                 query: str) -> tuple[str, str]:
         """(message to send, plain version for the transcript)."""
-        articles, _source, window = await self.fetcher.widening_search(
-            query, limit=4)
+        async def rewrite() -> list[str]:
+            return await alternative_queries(self.ai, text, query)
+
+        articles, _source, trace = await self.fetcher.widening_search(
+            query, limit=4, alternatives=rewrite)
         if not articles:
             # No reporting is not the same as nothing to say.
             background = await background_answer(self.ai, text)
@@ -724,12 +733,18 @@ class BotHandlers:
 
         # Deliberately not marked as sent: a story worth discussing now is
         # still worth putting in tomorrow's digest.
+        # A broadened search can return things that look tangential; saying
+        # what was actually searched keeps that from reading as a bug.
+        note = (f"<i>Nothing under that, so I searched "
+                f"\"{esc(trace.query)}\":</i>\n\n") if trace.was_rewritten else ""
+
         written = await write_chat_answer(self.ai, history, text, articles)
         if written:
-            return link_citations(written, articles, escape=esc), written
+            return (note + link_citations(written, articles, escape=esc),
+                    written)
         # No model: the articles themselves are still an answer.
         listed = "\n".join(article_line(a) for a in articles)
-        return listed, listed
+        return note + listed, listed
 
     async def _send_digest_now(self, update: Update, context) -> None:
         user = await self.db.get_user(update.effective_user.id)
