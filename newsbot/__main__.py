@@ -22,6 +22,7 @@ from .news import NewsFetcher
 from .scheduler import DigestScheduler
 from .space import SpaceService, send_launch_reminders
 from .appservice import AppService
+from .engine import NewsEngine
 from .push import Pusher
 from .webapp import Ctx, NewsProxy, start_web
 
@@ -103,6 +104,12 @@ def build_application(cfg: Config) -> Application:
     if space is not None:
         appsvc = AppService(db, ai, digest, Pusher(cfg.database_path.parent), globe_url)
         digest.app = appsvc
+    engine = None
+    if cfg.news.engine.enabled:
+        engine = NewsEngine(db, fetcher.rss, ai, cfg, app=appsvc)
+        digest.engine = engine
+        if appsvc is not None:
+            appsvc.engine = engine
     web = {}
 
     async def post_init(app: Application) -> None:
@@ -118,6 +125,18 @@ def build_application(cfg: Config) -> Application:
         )
         await scheduler.reschedule_all()
         scheduler.schedule_maintenance()
+        if engine is not None:
+            engine.bot = app.bot
+
+            async def engine_job(_ctx) -> None:
+                try:
+                    await engine.tick()
+                except Exception:  # noqa: BLE001 - a bad hour must not unschedule the job
+                    log.exception("News engine tick failed")
+
+            app.job_queue.run_repeating(
+                engine_job, interval=cfg.news.engine.collect_every_minutes * 60,
+                first=90, name="news-engine")
         me = await app.bot.get_me()
         if space is not None:
             schedule_space(app, db, space, cfg, globe_url, appsvc)
@@ -138,6 +157,8 @@ def build_application(cfg: Config) -> Application:
             web["server"].server_close()
         if space is not None:
             await space.close()
+        if engine is not None:
+            await engine.close()
         await fetcher.close()
         await ai.close()
         db.close()

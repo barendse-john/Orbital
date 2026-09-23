@@ -39,6 +39,7 @@ class AppService:
         self.pusher = pusher
         self.globe_url = globe_url
         self.scheduler = None            # attached once the bot is running
+        self.engine = None               # NewsEngine, attached in __main__
         self._last_refresh: dict[int, float] = {}
 
     # ---------------------------------------------------------- pairing
@@ -90,7 +91,7 @@ class AppService:
                 await self.db.set_digest_time(user_id, f"{int(h):02d}:{m}")
                 await self._reschedule(user_id)
             elif key in ("digest_telegram", "digest_push", "launch_telegram",
-                         "launch_push"):
+                         "launch_push", "breaking_push"):
                 await self.db.set_app_pref(user_id, key, bool(value))
             else:
                 raise AppError(f"Unknown setting {key!r}.")
@@ -133,6 +134,41 @@ class AppService:
                 "title": f"Your briefing · {len(items)} stories",
                 "body": items[0]["title"] + (f"\n+ {', '.join(topics)}" if topics else ""),
                 "url": "/app/#news", "tag": "briefing"})
+
+    async def feed(self, user_id: int) -> list[dict]:
+        """Top stories right now from the hourly engine, sent or not."""
+        if self.engine is None:
+            return []
+        from .engine import story_item
+        return [story_item(s) | {"relevance": s["relevance"], "impact": s["impact"]}
+                for s in (await self.engine.ranked(user_id, hours=24))[:30]]
+
+    async def vote(self, user_id: int, key: str, vote) -> dict:
+        if self.engine is None or not key:
+            raise AppError("Voting needs the news engine.", 400)
+        try:
+            vote = int(vote)
+        except (TypeError, ValueError):
+            raise AppError("Vote must be 1, 0 or -1.") from None
+        await self.engine.vote(user_id, key, vote)
+        return {"ok": True}
+
+    async def breaking_news(self, user_id: int, story: dict, bot=None) -> None:
+        prefs = await self.db.app_prefs(user_id)
+        if prefs.get("breaking_push", True):
+            await self.push(user_id, {
+                "title": f"⚡ {story['topic']}", "body": story["title"],
+                "url": "/app/#news", "tag": f"news-{story['key'][:40]}",
+                "link": story["url"]})
+        if bot is not None and prefs.get("digest_telegram", True):
+            from .formatting import esc
+            try:
+                await bot.send_message(
+                    user_id, f"⚡ <b>{esc(story['topic'])}</b>\n"
+                    f'<a href="{esc(story["url"])}">{esc(story["title"])}</a> - {esc(story["source"])}',
+                    parse_mode="HTML", disable_web_page_preview=True)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Breaking news to %s on Telegram failed: %s", user_id, exc)
 
     # --------------------------------------------------------- topics
 

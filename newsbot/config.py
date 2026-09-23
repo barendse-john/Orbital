@@ -75,6 +75,31 @@ class GNewsConfig:
     requests_per_second: float = 1.0
 
 
+DEFAULT_FEEDS = [
+    "https://feeds.bbci.co.uk/news/world/rss.xml",
+    "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
+    "https://feeds.arstechnica.com/arstechnica/index",
+    "https://spacenews.com/feed/",
+    "https://www.theverge.com/rss/index.xml",
+]
+
+
+@dataclass
+class EngineConfig:
+    enabled: bool = True
+    # Site feeds read every hour on top of the per-topic searches. The AI
+    # decides which of your topics (if any) each story belongs to.
+    feeds: list[str] = field(default_factory=lambda: list(DEFAULT_FEEDS))
+    lookback_hours: int = 48
+    per_search: int = 25
+    max_score_per_tick: int = 120
+    collect_every_minutes: int = 60
+    briefing_size: int = 8
+    per_topic: int = 3
+    breaking: bool = True
+    breaking_per_day: int = 3
+
+
 @dataclass
 class NewsConfig:
     language: str = "en"
@@ -85,6 +110,7 @@ class NewsConfig:
     max_articles_total: int = 6
     gnews: GNewsConfig = field(default_factory=GNewsConfig)
     rss_enabled: bool = True
+    engine: EngineConfig = field(default_factory=EngineConfig)
 
 
 @dataclass
@@ -180,6 +206,7 @@ class Config:
                         gnews.get("requests_per_second") or 1.0),
                 ),
                 rss_enabled=bool(rss.get("enabled", True)),
+                engine=_engine_cfg(news.get("engine") or {}),
             ),
             digest=DigestConfig(
                 default_time=str(dig.get("default_time") or "08:00"),
@@ -237,3 +264,20 @@ class Config:
                 "bot becomes its owner automatically. Message it now if "
                 "that should be you."
             )
+
+
+def _engine_cfg(raw: dict) -> EngineConfig:
+    d = EngineConfig()
+    feeds = raw.get("feeds")
+    return EngineConfig(
+        enabled=bool(raw.get("enabled", d.enabled)),
+        feeds=[str(f) for f in feeds] if isinstance(feeds, list) else d.feeds,
+        lookback_hours=int(raw.get("lookback_hours") or d.lookback_hours),
+        per_search=int(raw.get("per_search") or d.per_search),
+        max_score_per_tick=int(raw.get("max_score_per_tick") or d.max_score_per_tick),
+        collect_every_minutes=max(15, int(raw.get("collect_every_minutes") or d.collect_every_minutes)),
+        briefing_size=int(raw.get("briefing_size") or d.briefing_size),
+        per_topic=int(raw.get("per_topic") or d.per_topic),
+        breaking=bool(raw.get("breaking", d.breaking)),
+        breaking_per_day=int(raw.get("breaking_per_day") or d.breaking_per_day),
+    )

@@ -13,6 +13,7 @@ from telegram.constants import ParseMode
 from telegram.error import Forbidden, TelegramError
 
 from . import formatting, ranking
+from .engine import story_item
 from .brain import alternative_queries, background_answer, summarise_articles
 from .db import Database, User
 from .news import Article, NewsFetcher
@@ -23,6 +24,7 @@ log = logging.getLogger(__name__)
 class DigestService:
     def __init__(self, db: Database, fetcher: NewsFetcher, ai, cfg):
         self.app = None          # AppService, attached in __main__
+        self.engine = None       # NewsEngine, attached in __main__
         self.last_items: dict[int, list[dict]] = {}
         self.db = db
         self.fetcher = fetcher
@@ -41,6 +43,14 @@ class DigestService:
         topics = await self.db.list_topics(user.user_id)
         if not topics:
             return [], [], 0, None
+
+        if self.engine is not None:
+            ecfg = self.cfg.news.engine
+            stories = await self.engine.pick(user.user_id, ecfg.briefing_size, ecfg.per_topic)
+            if stories:
+                return await self._finish_engine(user, topics, stories)
+            # Nothing scored yet (the first hour after an install): fall
+            # through to the classic per-topic search so the digest still goes.
 
         # Fetch deeper than the digest needs: ranking can only pick the best
         # of what it was given, so it wants a pool, not a shortlist.
@@ -102,7 +112,7 @@ class DigestService:
 
         # Structured copy for the app's News tab.
         self.last_items[user.user_id] = [
-            {"topic": label, "title": a.title, "url": a.url, "source": a.source,
+            {"key": a.key, "topic": label, "title": a.title, "url": a.url, "source": a.source,
              "summary": a.summary or a.description,
              "published": a.published_at.isoformat() if a.published_at else "",
              "image": a.image_url}
@@ -115,6 +125,34 @@ class DigestService:
                  user.user_id, len(flat), len(ranked),
                  "+".join(sorted(sources)) or "none",
                  lead.url if lead else "nothing previewable")
+        return blocks, empty, len(flat), lead
+
+    async def _finish_engine(self, user: User, topics, stories: list[dict]):
+        per_topic: list[tuple[str, list[Article]]] = []
+        for story in stories:
+            art = story["_article"]
+            for label, arts in per_topic:
+                if label == story["topic"]:
+                    arts.append(art)
+                    break
+            else:
+                per_topic.append((story["topic"], [art]))
+        flat = [a for _, arts in per_topic for a in arts]
+        summaries = await summarise_articles(self.ai, flat)
+        for article, summary in zip(flat, summaries):
+            article.summary = summary
+        by_key = {s["key"]: s for s in stories}
+        # Every telling of a sent story counts as sent, so tomorrow doesn't
+        # bring the same event back from a different outlet.
+        await self.db.mark_sent(user.user_id, [
+            (k, by_key[a.key]["url"]) for a in flat for k in by_key[a.key]["members"]])
+        self.last_items[user.user_id] = [
+            story_item(by_key[a.key], a.summary) for a in flat]
+        blocks = [formatting.topic_block(label, arts) for label, arts in per_topic]
+        picked = {label for label, _ in per_topic}
+        empty = [t.label for t in topics if t.label not in picked]
+        lead = _pick_lead(flat)
+        log.info("Digest for %s: %d stories from the news engine", user.user_id, len(flat))
         return blocks, empty, len(flat), lead
 
     # ------------------------------------------------------------- sending

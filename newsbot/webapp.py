@@ -251,6 +251,11 @@ def make_handler(space, news: NewsProxy | None = None, ctx: Ctx | None = None):
                     return self._json(200, run(app.subscribe(uid, body.get("subscription"))))
                 if method == "DELETE":
                     return self._json(200, run(app.unsubscribe(body.get("endpoint", ""))))
+            if path == "/api/me/feed" and method == "GET":
+                return self._json(200, {"stories": run(app.feed(uid))})
+            if path == "/api/me/vote" and method == "POST":
+                body = self._body()
+                return self._json(200, run(app.vote(uid, body.get("key", ""), body.get("vote"))))
             if path == "/api/me/push/test" and method == "POST":
                 return self._json(200, run(app.test_push(uid)))
             return self._json(404, {"error": "Not found"})

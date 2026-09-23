@@ -214,6 +214,7 @@ class Database:
         added = [
             ("pending_topics", "asked", "INTEGER NOT NULL DEFAULT 1"),
             ("pending_topics", "transcript", "TEXT NOT NULL DEFAULT '[]'"),
+            ("app_prefs", "breaking_push", "INTEGER NOT NULL DEFAULT 1"),
         ]
         for table, column, decl in added:
             try:
@@ -853,11 +854,11 @@ class Database:
         if rows:
             return {k: bool(rows[0][k]) for k in rows[0].keys() if k != "user_id"}
         return {"digest_telegram": True, "digest_push": True,
-                "launch_telegram": True, "launch_push": True}
+                "launch_telegram": True, "launch_push": True, "breaking_push": True}
 
     async def set_app_pref(self, user_id: int, key: str, value: bool) -> None:
         if key not in ("digest_telegram", "digest_push", "launch_telegram",
-                       "launch_push"):
+                       "launch_push", "breaking_push"):
             raise ValueError(key)
         await asyncio.to_thread(
             self._write, "INSERT OR IGNORE INTO app_prefs (user_id) VALUES (?)",
