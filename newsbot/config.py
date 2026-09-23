@@ -81,6 +81,12 @@ DEFAULT_FEEDS = [
     "https://feeds.arstechnica.com/arstechnica/index",
     "https://spacenews.com/feed/",
     "https://www.theverge.com/rss/index.xml",
+    # New York Times (John subscribes, so the links open in full for him)
+    "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml",
+    "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
+    "https://rss.nytimes.com/services/xml/rss/nyt/Science.xml",
+    "https://rss.nytimes.com/services/xml/rss/nyt/Space.xml",
+    "https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml",
 ]
 
 
