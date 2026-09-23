@@ -226,6 +226,17 @@ const viewer = new Cesium.Viewer("globe", {
   baseLayerPicker: false, geocoder: false, homeButton: false, sceneModePicker: false,
   navigationHelpButton: false, animation: false, timeline: false, fullscreenButton: false,
   infoBox: false, selectionIndicator: false, shouldAnimate: true,
+  showRenderLoopErrors: false,
+});
+// If a frame ever throws, Cesium stops rendering for good and shows a red
+// error box. Log it and start the render loop again instead; only give up
+// (with a readable message) if it keeps failing.
+let renderErrors = 0;
+viewer.scene.renderError.addEventListener((_scene, err) => {
+  console.error("Globe render error", err);
+  renderErrors++;
+  if (renderErrors <= 30) setTimeout(() => { viewer.useDefaultRenderLoop = true; }, 300);
+  else showMsg("The globe keeps failing to draw. Reload the page to try again.");
 });
 const baseLayer = viewer.imageryLayers.get(0);
 const realLayer = viewer.imageryLayers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({
