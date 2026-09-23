@@ -372,7 +372,10 @@ controls: scroll wheel zooms, middle-drag (or Shift+left-drag on a
 touchpad) pans the view like a 2D map, right-drag rotates the globe like a desk globe (sideways spins it
 about the poles, up/down tips it north/south, north stays up), Ctrl+right-drag
 tilts the view, and ⌖ Center (or the C key) puts the globe back in the
-middle, north up. On a phone, one finger pans and pinch zooms. The globe is
+middle, north up. The **Mouse:** button switches to Google Earth's layout
+instead (left-drag moves, right-drag or wheel zooms, middle-drag or
+Shift+left-drag rotates and tilts, Ctrl+left-drag looks around); the choice
+is remembered. On a phone, one finger pans and pinch zooms. The globe is
 solid so the far side doesn't distract; the X-ray button makes it see-through. Left-click inspects: a country or ocean
 shows its latest news, a satellite shows its orbit and news about it, a
 launch pad shows the launch and the rocket's specs and news. The layer

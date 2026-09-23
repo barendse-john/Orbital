@@ -174,6 +174,7 @@
     <button data-layer="rings">Rings</button>
     <button data-layer="borders">Borders</button>
     <button data-layer="xray">X-ray</button>
+    <button id="mouseMode" title="Switch between your mouse layout and Google Earth's">Mouse: mine</button>
     <button id="viewMode">Real view</button>
   </div>
 </div>
@@ -185,7 +186,7 @@
 
 <div id="card" class="glass"></div>
 <div id="msg" class="glass"></div>
-<div id="hud" class="glass"><span id="clock">--</span><span id="coords">LAT --.----  LON ---.----</span><span class="hud-extra">WHEEL zoom · MMB/SHIFT+LMB pan · RMB rotate · CTRL+RMB tilt · C center</span><span class="hud-extra" id="stats">OBJ 0 · LAUNCH 0</span></div>
+<div id="hud" class="glass"><span id="clock">--</span><span id="coords">LAT --.----  LON ---.----</span><span class="hud-extra" id="mouseHint">WHEEL zoom · MMB/SHIFT+LMB pan · RMB rotate · CTRL+RMB tilt · C center</span><span class="hud-extra" id="stats">OBJ 0 · LAUNCH 0</span></div>
 <div id="about">Natural Earth · Esri · CelesTrak · The Space Devs</div>
 
 <script>
@@ -887,6 +888,22 @@ new Cesium.ScreenSpaceEventHandler(scene.canvas).setInputAction((click) => {
   }
 }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
+// ---------------------------------------------------------- camera guard
+// If a gesture ever leaves the camera broken - NaN, or pushed underground by
+// a fast zoom-in overshooting the surface - put it back where it last was.
+let goodCam = null;
+scene.preRender.addEventListener(() => {
+  const c = viewer.camera;
+  const carto = Cesium.Ellipsoid.WGS84.cartesianToCartographic(c.positionWC);
+  if ([c.positionWC.x, c.positionWC.y, c.positionWC.z, c.heading, c.pitch].every(Number.isFinite)
+      && carto && carto.height > 50) {
+    goodCam = { destination: Cesium.Cartesian3.clone(c.positionWC),
+      orientation: { heading: c.heading, pitch: c.pitch, roll: c.roll } };
+  } else if (goodCam) {
+    c.setView(goodCam);
+  }
+});
+
 // ---------------------------------------------------------------- controls
 // Mouse:
 //   wheel              zoom (towards the cursor)
@@ -901,10 +918,34 @@ new Cesium.ScreenSpaceEventHandler(scene.canvas).setInputAction((click) => {
 // Touch: one finger pans, pinch zooms and tilts.
 const ctl = scene.screenSpaceCameraController;
 const CE = Cesium.CameraEventType;
-ctl.rotateEventTypes = [];          // mouse: none of Cesium's own drags; see below
-ctl.tiltEventTypes = [CE.PINCH, { eventType: CE.RIGHT_DRAG, modifier: Cesium.KeyboardEventModifier.CTRL }];
-ctl.zoomEventTypes = [CE.WHEEL, CE.PINCH];
-ctl.lookEventTypes = [];
+const KM = Cesium.KeyboardEventModifier;
+// Two layouts, switchable with the "Mouse:" button and remembered:
+//   mine          as described above
+//   Google Earth  left-drag grabs and moves the globe, right-drag up/down
+//                 zooms, wheel zooms, middle-drag or Shift+left-drag rotates
+//                 and tilts, Ctrl+left-drag looks around. Clicks still inspect.
+let mouseMode = "mine";
+try { mouseMode = localStorage.getItem("globeMouse") === "earth" ? "earth" : "mine"; } catch (e) { /* ignore */ }
+function applyMouseMode() {
+  if (mouseMode === "earth") {
+    ctl.rotateEventTypes = [CE.LEFT_DRAG];
+    ctl.zoomEventTypes = [CE.WHEEL, CE.RIGHT_DRAG, CE.PINCH];
+    ctl.tiltEventTypes = [CE.MIDDLE_DRAG, CE.PINCH, { eventType: CE.LEFT_DRAG, modifier: KM.SHIFT }];
+    ctl.lookEventTypes = [{ eventType: CE.LEFT_DRAG, modifier: KM.CTRL }];
+  } else {
+    ctl.rotateEventTypes = [];      // mouse: none of Cesium's own drags; see below
+    ctl.zoomEventTypes = [CE.WHEEL, CE.PINCH];
+    ctl.tiltEventTypes = [CE.PINCH, { eventType: CE.RIGHT_DRAG, modifier: KM.CTRL }];
+    ctl.lookEventTypes = [];
+  }
+  $("mouseMode").textContent = mouseMode === "earth" ? "Mouse: Google Earth" : "Mouse: mine";
+  $("mouseHint").textContent = mouseMode === "earth"
+    ? "LMB drag move · RMB drag/WHEEL zoom · MMB/SHIFT+LMB rotate+tilt · CTRL+LMB look · C center"
+    : "WHEEL zoom · MMB/SHIFT+LMB pan · RMB rotate · CTRL+RMB tilt · C center";
+  try { localStorage.setItem("globeMouse", mouseMode); } catch (e) { /* ignore */ }
+}
+$("mouseMode").onclick = () => { mouseMode = mouseMode === "earth" ? "mine" : "earth"; applyMouseMode(); };
+applyMouseMode();
 ctl.translateEventTypes = [];
 const canvas = scene.canvas;
 canvas.addEventListener("contextmenu", (e) => e.preventDefault());
@@ -917,6 +958,7 @@ let pan = null;                     // middle-drag state
 canvas.addEventListener("pointerdown", (e) => {
   const touch = e.pointerType === "touch" || e.pointerType === "pen";
   // A mouse's left button is for clicking; a finger has nothing else.
+  if (mouseMode === "earth") return;   // Cesium's own handlers do everything
   ctl.rotateEventTypes = touch ? [CE.LEFT_DRAG] : [];
   // Pan: middle button, or Shift + left for touchpads.
   if (!touch && (e.button === 1 || (e.button === 0 && e.shiftKey))) {
