@@ -137,12 +137,17 @@
     display: none; z-index: 9; max-width: 90vw; text-align: center; }
   #about { position: fixed; right: 12px; top: 64px; font-size: 9.5px; color: var(--muted); z-index: 2; opacity: .7; }
 
+  #menuBtn { display: none; margin-left: auto; padding: 8px 12px; }
   @media (max-width: 720px) {
     #side { top: auto; left: 8px; right: 8px; width: auto; height: 38vh; bottom: 40px; }
     #card { left: 8px; right: 8px; width: auto; bottom: 40px; max-height: 50vh; z-index: 6; }
     #clock, #about, .hud-extra { display: none; }
     .brand small { display: none; }
     #bar { top: 8px; left: 8px; right: 8px; }
+    /* Phones: the control rows fold away behind the menu button. */
+    #bar > .chips { display: none; }
+    body.menu #bar > .chips { display: flex; }
+    #menuBtn { display: inline-block; }
   }
 </style>
 </head>
@@ -152,6 +157,7 @@
 
 <div id="bar">
   <div class="glass brand">ORBITAL//HOLO<small><span class="live">●</span> LIVE · WGS84 · SGP4</small></div>
+  <button class="glass" id="menuBtn" aria-label="Controls">☰ Controls</button>
   <div class="glass chips" id="groups"></div>
   <div class="glass chips">
     <button data-speed="1" class="on">1×</button>
@@ -340,7 +346,13 @@ function satEcf(sat, date) {
   const pv = satellite.propagate(sat.satrec, date);
   if (!pv || !pv.position || typeof pv.position !== "object") return null;
   const gmst = satellite.gstime(date);
-  return { ecf: satellite.eciToEcf(pv.position, gmst), eci: pv.position, vel: pv.velocity, gmst };
+  const ecf = satellite.eciToEcf(pv.position, gmst);
+  // A decaying or badly-fitted TLE can propagate to NaN. One NaN position
+  // poisons Cesium's near/far planes and stops rendering altogether
+  // ("Invalid array length"), so such satellites are simply skipped.
+  if (!isFinite(ecf.x) || !isFinite(ecf.y) || !isFinite(ecf.z)
+      || Math.hypot(ecf.x, ecf.y, ecf.z) > 500000) return null;
+  return { ecf, eci: pv.position, vel: pv.velocity, gmst };
 }
 function toCart(ecf, result) {
   return Cesium.Cartesian3.fromElements(ecf.x * 1000, ecf.y * 1000, ecf.z * 1000, result);
@@ -364,7 +376,7 @@ async function loadSatellites() {
       if (!satrec || satrec.error) continue;
       const sat = { name, group, satrec, color };
       sat.point = points.add({
-        position: Cesium.Cartesian3.ZERO, color, pixelSize: big ? 8 : 3.5,
+        position: Cesium.Cartesian3.fromDegrees(0, 0, 400000), color: Cesium.Color.TRANSPARENT, pixelSize: big ? 8 : 3.5,
         outlineColor: Cesium.Color.BLACK.withAlpha(0.6), outlineWidth: big ? 1.5 : 0.5,
         show: !hiddenGroups.has(group), id: sat,
       });
@@ -396,7 +408,8 @@ function updateSatellites(force) {
   for (const s of sats) {
     if (!s.point.show) continue;
     const p = satEcf(s, date);
-    if (p) { s.point.position = toCart(p.ecf, scratch); }
+    if (p) { s.point.position = toCart(p.ecf, scratch); s.point.color = s.color; }
+    else { s.point.color = Cesium.Color.TRANSPARENT; }
   }
 }
 
@@ -412,7 +425,8 @@ function drawOrbit(sat, date) {
     const t = new Date(date.getTime() + (i / steps) * periodMin * 60000);
     const pv = satellite.propagate(sat.satrec, t);
     if (!pv || !pv.position || typeof pv.position !== "object") continue;
-    pts.push(toCart(satellite.eciToEcf(pv.position, gmst)));
+    const e = satellite.eciToEcf(pv.position, gmst);
+    if (isFinite(e.x) && isFinite(e.y) && isFinite(e.z)) pts.push(toCart(e));
   }
   // A PolylineCollection updates synchronously; an Entity polyline rebuilds
   // its geometry on a worker every time and never settled at this rate.
@@ -894,6 +908,7 @@ $("now").onclick = () => {
 $("toggleList").onclick = (e) => { $("side").classList.toggle("hidden"); e.target.classList.toggle("on"); };
 if (matchMedia("(max-width: 720px)").matches) { $("side").classList.add("hidden"); $("toggleList").classList.remove("on"); }
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") clearSelection(); });
+$("menuBtn").onclick = () => document.body.classList.toggle("menu");
 
 loadSatellites();
 loadLaunches();
