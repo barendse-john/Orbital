@@ -200,6 +200,10 @@ const GROUP_NAMES = { stations: "Space stations", visual: "Brightest", gnss: "GN
   weather: "Weather", starlink: "Starlink", science: "Science", geo: "GEO", active: "All active" };
 
 const $ = (id) => document.getElementById(id);
+// Phones and tablets get the light path: no bloom post-processing, coarser
+// coastlines and no MSAA. Those are the expensive, fragile parts on a
+// mobile GPU (the reference project, gods-eye-view, ships bloom off too).
+const LOW_POWER = matchMedia("(pointer: coarse)").matches || Math.min(screen.width, screen.height) < 720;
 const layers = { sats: true, launches: true, grid: true, rings: true, borders: true, xray: false };
 try { Object.assign(layers, JSON.parse(localStorage.getItem("globeLayers") || "{}")); } catch (e) { /* ignore */ }
 function el(tag, cls, text) {
@@ -227,7 +231,9 @@ const viewer = new Cesium.Viewer("globe", {
   navigationHelpButton: false, animation: false, timeline: false, fullscreenButton: false,
   infoBox: false, selectionIndicator: false, shouldAnimate: true,
   showRenderLoopErrors: false,
+  msaaSamples: LOW_POWER ? 1 : 4,
 });
+viewer.targetFrameRate = LOW_POWER ? 30 : 60;
 // If a frame ever throws, Cesium stops rendering for good and shows a red
 // error box. Log it and start the render loop again instead; only give up
 // (with a readable message) if it keeps failing.
@@ -295,7 +301,7 @@ async function buildContinents() {
   try {
     const base = "https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/";
     const [land, countries] = await Promise.all([
-      fetch(base + "land-50m.json").then(r => r.json()),
+      fetch(base + (LOW_POWER ? "land-110m.json" : "land-50m.json")).then(r => r.json()),
       fetch(base + "countries-110m.json").then(r => r.json())]);
     const coast = topojson.mesh(land, land.objects.land);
     const borders = topojson.mesh(countries, countries.objects.countries, (a, b) => a !== b);
@@ -320,16 +326,18 @@ function applyMode(mode) {
   holo.show = on;
   const g = scene.globe;
   g.baseColor = on ? Cesium.Color.fromCssColorString("#1c0e02") : Cesium.Color.BLUE;
-  g.translucency.enabled = on;
-  g.translucency.frontFaceAlpha = layers.xray ? 0.72 : 0.94;
-  g.translucency.backFaceAlpha = layers.xray ? 0.25 : 0.0;
+  // Translucency is only switched on for X-ray: a near-opaque translucent
+  // globe costs a second globe pass for nothing.
+  g.translucency.enabled = on && layers.xray;
+  g.translucency.frontFaceAlpha = 0.72;
+  g.translucency.backFaceAlpha = 0.25;
   g.enableLighting = !on;                       // real day/night terminator
   g.showGroundAtmosphere = !on;
   scene.skyAtmosphere.show = !on;
   scene.skyBox.show = !on;
   scene.backgroundColor = Cesium.Color.fromCssColorString("#050302");
   scene.sun.show = !on; scene.moon.show = !on;
-  bloom.enabled = on;
+  bloom.enabled = on && !LOW_POWER;
   $("viewMode").textContent = on ? "Real view" : "Holo view";
   try { localStorage.setItem("globeMode", on ? "holo" : "real"); } catch (e) { /* private mode */ }
 }
@@ -348,22 +356,28 @@ const clockDate = () => Cesium.JulianDate.toDate(viewer.clock.currentTime);
 
 // -------------------------------------------------------------- satellites
 const points = scene.primitives.add(new Cesium.PointPrimitiveCollection());
-const orbitLines = scene.primitives.add(new Cesium.PolylineCollection());
 let sats = [];
 const hiddenGroups = new Set(["starlink", "active"]);   // thousands of dots; opt in
-let selectedSat = null, followEntity = null, orbitEntity = null, lastOrbit = 0;
+let selectedSat = null, followEntity = null, orbit = null;
 
+// SGP4 in a try/catch, geodetic out, every number checked. satellite.js
+// signals failure three ways - a thrown error, position === false, and
+// satrec.error set with garbage numbers - and a single NaN reaching Cesium
+// kills the render loop ("Invalid array length"). Pattern from
+// gods-eye-view's propagatePosition().
 function satEcf(sat, date) {
-  const pv = satellite.propagate(sat.satrec, date);
-  if (!pv || !pv.position || typeof pv.position !== "object") return null;
-  const gmst = satellite.gstime(date);
-  const ecf = satellite.eciToEcf(pv.position, gmst);
-  // A decaying or badly-fitted TLE can propagate to NaN. One NaN position
-  // poisons Cesium's near/far planes and stops rendering altogether
-  // ("Invalid array length"), so such satellites are simply skipped.
-  if (!isFinite(ecf.x) || !isFinite(ecf.y) || !isFinite(ecf.z)
-      || Math.hypot(ecf.x, ecf.y, ecf.z) > 500000) return null;
-  return { ecf, eci: pv.position, vel: pv.velocity, gmst };
+  try {
+    const pv = satellite.propagate(sat.satrec, date);
+    if (!pv || !pv.position || typeof pv.position === "boolean" || sat.satrec.error) return null;
+    const gmst = satellite.gstime(date);
+    const ecf = satellite.eciToEcf(pv.position, gmst);
+    const r = Math.hypot(ecf.x, ecf.y, ecf.z);
+    if (!Number.isFinite(r) || r < 6400 || r > 500000) return null;   // km: inside Earth or absurd
+    const vel = pv.velocity && typeof pv.velocity !== "boolean" ? pv.velocity : { x: 0, y: 0, z: 0 };
+    return { ecf, eci: pv.position, vel, gmst };
+  } catch (e) {
+    return null;
+  }
 }
 function toCart(ecf, result) {
   return Cesium.Cartesian3.fromElements(ecf.x * 1000, ecf.y * 1000, ecf.z * 1000, result);
@@ -377,6 +391,7 @@ async function loadSatellites() {
   sats = [];
   const chips = $("groups");
   chips.replaceChildren();
+  const now = clockDate();
   for (const [group, list] of Object.entries(data.groups || {})) {
     const color = Cesium.Color.fromCssColorString(GROUP_COLORS[group] || "#b8c4d9");
     const big = group === "stations";
@@ -386,10 +401,15 @@ async function loadSatellites() {
       try { satrec = satellite.twoline2satrec(l1, l2); } catch (e) { continue; }
       if (!satrec || satrec.error) continue;
       const sat = { name, group, satrec, color };
+      // A satellite that can't be placed now (decayed, bad fit) is dropped
+      // at load rather than carried as a hidden liability.
+      const p = satEcf(sat, now);
+      if (!p) continue;
       sat.point = points.add({
-        position: Cesium.Cartesian3.fromDegrees(0, 0, 400000), color: Cesium.Color.TRANSPARENT, pixelSize: big ? 8 : 3.5,
+        position: toCart(p.ecf), color, pixelSize: big ? 8 : 3.5,
         outlineColor: Cesium.Color.BLACK.withAlpha(0.6), outlineWidth: big ? 1.5 : 0.5,
-        show: !hiddenGroups.has(group), id: sat,
+        scaleByDistance: new Cesium.NearFarScalar(1e6, 1.5, 2e7, 0.8),
+        show: layers.sats && !hiddenGroups.has(group), id: sat,
       });
       sats.push(sat); count++;
     }
@@ -400,19 +420,20 @@ async function loadSatellites() {
       hiddenGroups.has(group) ? hiddenGroups.delete(group) : hiddenGroups.add(group);
       chip.classList.toggle("off", hiddenGroups.has(group));
       for (const s of sats) if (s.group === group) s.point.show = !hiddenGroups.has(group);
+      updateSatellites(true);
     };
     chips.append(chip);
   }
-  updateSatellites(true);
 }
 
+// Positions are re-propagated once a second (each upload of the point
+// buffer is GPU work - doing it every frame on a phone is what made the
+// globe stutter), faster only while time is sped up or one is selected.
 let lastSatUpdate = 0;
 const scratch = new Cesium.Cartesian3();
 function updateSatellites(force) {
   const now = performance.now();
-  // Propagating every satellite every frame is wasted work at 1x; ~20 Hz is
-  // smooth to the eye. Big groups get a slower cadence.
-  const every = sats.length > 3000 ? 200 : 50;
+  const every = viewer.clock.multiplier > 1 ? 150 : selectedSat ? 250 : 1000;
   if (!force && now - lastSatUpdate < every) return;
   lastSatUpdate = now;
   const date = clockDate();
@@ -420,45 +441,66 @@ function updateSatellites(force) {
     if (!s.point.show) continue;
     const p = satEcf(s, date);
     if (p) { s.point.position = toCart(p.ecf, scratch); s.point.color = s.color; }
-    else { s.point.color = Cesium.Color.TRANSPARENT; }
+    else s.point.color = Cesium.Color.TRANSPARENT;       // position left where it was
   }
 }
 
-function drawOrbit(sat, date) {
-  // One full revolution, drawn in the inertial frame and rotated into the
-  // Earth frame at the current instant - so it's the closed ellipse the
-  // satellite is flying, not a ground track.
+// The selected orbit is one Primitive, built synchronously ONCE and then
+// turned with the Earth through its modelMatrix - no geometry rebuilds, no
+// flicker. Bright where the orbit is in front of the globe, dim behind it.
+// This is gods-eye-view's ring approach.
+function drawOrbit(sat) {
+  removeOrbit();
+  const bake = clockDate();
   const periodMin = (2 * Math.PI) / sat.satrec.no;
-  const gmst = satellite.gstime(date);
+  const gmst = satellite.gstime(bake);
   const pts = [];
-  const steps = 240;
-  for (let i = 0; i <= steps; i++) {
-    const t = new Date(date.getTime() + (i / steps) * periodMin * 60000);
-    const pv = satellite.propagate(sat.satrec, t);
-    if (!pv || !pv.position || typeof pv.position !== "object") continue;
-    const e = satellite.eciToEcf(pv.position, gmst);
-    if (isFinite(e.x) && isFinite(e.y) && isFinite(e.z)) pts.push(toCart(e));
+  for (let i = 0; i <= 180; i++) {
+    const t = new Date(bake.getTime() + (i / 180) * periodMin * 60000);
+    try {
+      const pv = satellite.propagate(sat.satrec, t);
+      if (!pv || !pv.position || typeof pv.position === "boolean") continue;
+      const e = satellite.eciToEcf(pv.position, gmst);   // fixed GMST: the ring closes
+      if ([e.x, e.y, e.z].every(Number.isFinite)) pts.push(toCart(e));
+    } catch (err) { /* skip this step */ }
   }
-  // A PolylineCollection updates synchronously; an Entity polyline rebuilds
-  // its geometry on a worker every time and never settled at this rate.
-  if (!orbitEntity) {
-    orbitEntity = orbitLines.add({ positions: pts, width: 4,
-      material: Cesium.Material.fromType("PolylineGlow", { color: sat.color.withAlpha(0.9), glowPower: 0.3 }) });
-  } else {
-    orbitEntity.positions = pts;
-    orbitEntity.material.uniforms.color = sat.color.withAlpha(0.95);
-  }
-  orbitEntity.show = true;
+  if (pts.length < 2) return;
+  const primitive = new Cesium.Primitive({
+    geometryInstances: new Cesium.GeometryInstance({
+      geometry: new Cesium.PolylineGeometry({ positions: pts, width: 2.5,
+        arcType: Cesium.ArcType.NONE, vertexFormat: Cesium.PolylineColorAppearance.VERTEX_FORMAT }),
+      attributes: {
+        color: Cesium.ColorGeometryInstanceAttribute.fromColor(sat.color.withAlpha(0.9)),
+        depthFailColor: Cesium.ColorGeometryInstanceAttribute.fromColor(sat.color.withAlpha(0.25)),
+      },
+    }),
+    appearance: new Cesium.PolylineColorAppearance({ translucent: true }),
+    depthFailAppearance: new Cesium.PolylineColorAppearance({ translucent: true }),
+    asynchronous: false, allowPicking: false,
+  });
+  scene.primitives.add(primitive);
+  orbit = { primitive, gmstAtBake: gmst, lastTurn: 0 };
+}
+function turnOrbit() {
+  if (!orbit || performance.now() - orbit.lastTurn < 500) return;
+  orbit.lastTurn = performance.now();
+  const d = satellite.gstime(clockDate()) - orbit.gmstAtBake;
+  Cesium.Matrix4.fromRotationTranslation(Cesium.Matrix3.fromRotationZ(-d), Cesium.Cartesian3.ZERO,
+    orbit.primitive.modelMatrix);
+}
+function removeOrbit() {
+  if (orbit) { scene.primitives.remove(orbit.primitive); orbit = null; }
 }
 
 function selectSat(sat) {
-  selectedSat = sat; selectedLaunch = null; lastOrbit = 0;
+  selectedSat = sat; selectedLaunch = null;
+  drawOrbit(sat);
   renderSatCard();
 }
 function clearSelection() {
   selectedSat = null; selectedLaunch = null;
   if (areaMarker) { viewer.entities.remove(areaMarker); areaMarker = null; }
-  if (orbitEntity) orbitEntity.show = false;
+  removeOrbit();
   unfollow();
   $("card").classList.remove("show");
   document.querySelectorAll(".row.sel").forEach(r => r.classList.remove("sel"));
@@ -625,7 +667,7 @@ let selectedLaunch = null;
 const padEntities = new Map();    // pad key -> entity
 const tagEls = new Map();         // pad key -> tag element
 
-let pingRadius = 1, pingColor = HOT.withAlpha(0);
+const pings = scene.primitives.add(new Cesium.PointPrimitiveCollection());
 const padKey = (l) => `${l.lat.toFixed(3)},${l.lon.toFixed(3)}`;
 const netMs = (l) => Date.parse(l.net);
 
@@ -660,6 +702,7 @@ async function loadLaunches() {
   catch (e) { console.warn("launches", e); return; }
   launches = (data.launches || []).filter(l => isFinite(l.lat) && isFinite(l.lon));
   for (const e of padEntities.values()) viewer.entities.remove(e);
+  pings.removeAll();
   padEntities.clear();
   for (const t of tagEls.values()) t.remove();
   tagEls.clear();
@@ -675,12 +718,12 @@ async function loadLaunches() {
     const ent = viewer.entities.add({
       position: Cesium.Cartesian3.fromDegrees(list[0].lon, list[0].lat, 0),
       point: { pixelSize: 8, color: HOT, outlineColor: HOT.withAlpha(0.35), outlineWidth: 5 },
-      // Radar ping around pads with a launch in the next 72 hours.
-      ellipse: { semiMajorAxis: new Cesium.CallbackProperty(() => pingRadius, false),
-        semiMinorAxis: new Cesium.CallbackProperty(() => pingRadius, false),
-        material: new Cesium.ColorMaterialProperty(new Cesium.CallbackProperty(() => pingColor, false)),
-        height: 0, show: new Cesium.CallbackProperty(() => !!ent.soon, false) },
     });
+    // Radar ping for pads with a launch in the next 72 hours: a screen-space
+    // ring whose size and fade are uniforms. (An animated ellipse entity
+    // rebuilt its geometry every single frame.)
+    ent.ping = pings.add({ position: Cesium.Cartesian3.fromDegrees(list[0].lon, list[0].lat, 0),
+      pixelSize: 10, color: Cesium.Color.TRANSPARENT, outlineColor: HOT.withAlpha(0), outlineWidth: 2, show: false });
     ent.padLaunches = list;
     ent.show = layers.launches;
     padEntities.set(k, ent);
@@ -715,7 +758,7 @@ function renderList() {
 
 function selectLaunch(l, fly) {
   selectedSat = null; unfollow();
-  if (orbitEntity) orbitEntity.show = false;
+  removeOrbit();
   selectedLaunch = l;
   if (fly) viewer.camera.flyToBoundingSphere(
     new Cesium.BoundingSphere(Cesium.Cartesian3.fromDegrees(l.lon, l.lat, 0), 1),
@@ -818,10 +861,14 @@ function tickCountdowns() {
 // ------------------------------------------------------------------- wiring
 scene.preUpdate.addEventListener(() => {
   const phase = (performance.now() / 2600) % 1;       // one ping every 2.6 s
-  pingRadius = 15000 + phase * 450000;
-  pingColor = HOT.withAlpha(0.4 * (1 - phase));
+  const ringColor = HOT.withAlpha(0.8 * (1 - phase));
+  for (const e of padEntities.values()) {
+    if (!e.ping) continue;
+    e.ping.show = !!e.soon && layers.launches;
+    if (e.ping.show) { e.ping.pixelSize = 10 + phase * 46; e.ping.outlineColor = ringColor; }
+  }
   updateSatellites(false);
-  if (selectedSat && performance.now() - lastOrbit > 2000) { lastOrbit = performance.now(); drawOrbit(selectedSat, clockDate()); }
+  turnOrbit();
 });
 scene.postRender.addEventListener(updateTags);
 
@@ -877,14 +924,14 @@ canvas.addEventListener("pointerdown", (e) => {
 // ------------------------------------------------------------------ layers
 function applyLayers() {
   points.show = layers.sats;
+  pings.show = layers.launches;
   if (!layers.sats && selectedSat) clearSelection();
   for (const e of padEntities.values()) e.show = layers.launches;
   $("tags").style.display = layers.launches ? "" : "none";
   if (!layers.launches && selectedLaunch) clearSelection();
   // Solid-ish shell by default so the far side doesn't distract; X-ray
   // makes the globe see-through again.
-  scene.globe.translucency.frontFaceAlpha = layers.xray ? 0.72 : 0.94;
-  scene.globe.translucency.backFaceAlpha = layers.xray ? 0.25 : 0.0;
+  scene.globe.translucency.enabled = holo.show && layers.xray;
   gridLines.show = layers.grid; ringLines.show = layers.rings; borderLines.show = layers.borders;
   document.querySelectorAll("[data-layer]").forEach(b => b.classList.toggle("on", !!layers[b.dataset.layer]));
   try { localStorage.setItem("globeLayers", JSON.stringify(layers)); } catch (e) { /* ignore */ }
