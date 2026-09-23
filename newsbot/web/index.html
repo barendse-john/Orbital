@@ -164,6 +164,7 @@
     <button data-speed="60">60×</button>
     <button data-speed="600">600×</button>
     <button id="now">Now</button>
+    <button id="center" title="Put the globe back in the middle, north up (key: C)">⌖ Center</button>
     <button id="toggleList" class="on">List</button>
   </div>
   <div class="glass chips" id="layerBar">
@@ -184,7 +185,7 @@
 
 <div id="card" class="glass"></div>
 <div id="msg" class="glass"></div>
-<div id="hud" class="glass"><span id="clock">--</span><span id="coords">LAT --.----  LON ---.----</span><span class="hud-extra">WHEEL zoom · MMB pan · RMB rotate · CTRL+RMB tilt · LMB inspect</span><span class="hud-extra" id="stats">OBJ 0 · LAUNCH 0</span></div>
+<div id="hud" class="glass"><span id="clock">--</span><span id="coords">LAT --.----  LON ---.----</span><span class="hud-extra">WHEEL zoom · MMB/SHIFT+LMB pan · RMB rotate · CTRL+RMB tilt · C center</span><span class="hud-extra" id="stats">OBJ 0 · LAUNCH 0</span></div>
 <div id="about">Natural Earth · Esri · CelesTrak · The Space Devs</div>
 
 <script>
@@ -762,7 +763,9 @@ function selectLaunch(l, fly) {
   selectedLaunch = l;
   if (fly) viewer.camera.flyToBoundingSphere(
     new Cesium.BoundingSphere(Cesium.Cartesian3.fromDegrees(l.lon, l.lat, 0), 1),
-    { offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-50), 4.0e6), duration: 2.2 });
+    // Straight down, not tilted: a tilted view that is then zoomed out
+    // leaves the globe stranded at the bottom of the screen.
+    { offset: new Cesium.HeadingPitchRange(0, -Cesium.Math.PI_OVER_TWO, 4.0e6), duration: 2.2 });
   const card = $("card");
   if (areaMarker) { viewer.entities.remove(areaMarker); areaMarker = null; }
   card.replaceChildren(); card.dataset.kind = "launch";
@@ -887,7 +890,9 @@ new Cesium.ScreenSpaceEventHandler(scene.canvas).setInputAction((click) => {
 // ---------------------------------------------------------------- controls
 // Mouse:
 //   wheel              zoom (towards the cursor)
-//   middle-drag        pan - the ground follows the cursor, like a 2D map
+//   middle-drag        pan - the whole view slides in the screen plane,
+//                      like dragging a 2D map (Shift+left-drag too, for
+//                      touchpads without a middle button)
 //   right-drag         rotate the globe about its own axis like a desk
 //                      globe (sideways) and tip it north/south (up/down),
 //                      north stays up
@@ -896,7 +901,7 @@ new Cesium.ScreenSpaceEventHandler(scene.canvas).setInputAction((click) => {
 // Touch: one finger pans, pinch zooms and tilts.
 const ctl = scene.screenSpaceCameraController;
 const CE = Cesium.CameraEventType;
-ctl.rotateEventTypes = [CE.MIDDLE_DRAG];
+ctl.rotateEventTypes = [];          // mouse: none of Cesium's own drags; see below
 ctl.tiltEventTypes = [CE.PINCH, { eventType: CE.RIGHT_DRAG, modifier: Cesium.KeyboardEventModifier.CTRL }];
 ctl.zoomEventTypes = [CE.WHEEL, CE.PINCH];
 ctl.lookEventTypes = [];
@@ -908,11 +913,26 @@ canvas.addEventListener("mousedown", (e) => { if (e.button === 1) e.preventDefau
 canvas.addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); });
 
 let spin = null;                    // right-drag state
+let pan = null;                     // middle-drag state
 canvas.addEventListener("pointerdown", (e) => {
   const touch = e.pointerType === "touch" || e.pointerType === "pen";
   // A mouse's left button is for clicking; a finger has nothing else.
-  ctl.rotateEventTypes = touch ? [CE.LEFT_DRAG, CE.MIDDLE_DRAG] : [CE.MIDDLE_DRAG];
-  if (e.button === 1 && viewer.trackedEntity) unfollow();
+  ctl.rotateEventTypes = touch ? [CE.LEFT_DRAG] : [];
+  // Pan: middle button, or Shift + left for touchpads.
+  if (!touch && (e.button === 1 || (e.button === 0 && e.shiftKey))) {
+    e.preventDefault();
+    if (viewer.trackedEntity) unfollow();
+    // Speed is set by how far away the ground under the cursor is, so the
+    // spot you grabbed stays under the cursor at any zoom.
+    const rect = canvas.getBoundingClientRect();
+    const hit = viewer.camera.pickEllipsoid(new Cesium.Cartesian2(e.clientX - rect.left, e.clientY - rect.top));
+    const depth = hit ? Cesium.Cartesian3.distance(viewer.camera.positionWC, hit)
+                      : Cesium.Cartesian3.magnitude(viewer.camera.positionWC);
+    pan = { x: e.clientX, y: e.clientY, id: e.pointerId,
+      k: 2 * depth * Math.tan(viewer.camera.frustum.fovy / 2) / canvas.clientHeight };
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* older browsers */ }
+    return;
+  }
   if (e.button === 2 && !e.ctrlKey && !touch) {
     if (viewer.trackedEntity) unfollow();
     spin = { x: e.clientX, y: e.clientY, id: e.pointerId };
@@ -920,6 +940,13 @@ canvas.addEventListener("pointerdown", (e) => {
   }
 }, true);
 canvas.addEventListener("pointermove", (e) => {
+  if (pan && e.pointerId === pan.id) {
+    const dx = e.clientX - pan.x, dy = e.clientY - pan.y;
+    pan.x = e.clientX; pan.y = e.clientY;
+    viewer.camera.moveLeft(dx * pan.k);    // the scene follows the hand
+    viewer.camera.moveUp(dy * pan.k);
+    return;
+  }
   if (!spin || e.pointerId !== spin.id) return;
   const dx = e.clientX - spin.x, dy = e.clientY - spin.y;
   spin.x = e.clientX; spin.y = e.clientY;
@@ -934,7 +961,10 @@ canvas.addEventListener("pointermove", (e) => {
   // Stop short of the poles so north never flips.
   if (Math.abs(viewer.camera.positionCartographic.latitude) > Cesium.Math.toRadians(85)) viewer.camera.rotateUp(dy * k);
 });
-const endSpin = (e) => { if (spin && e.pointerId === spin.id) spin = null; };
+const endSpin = (e) => {
+  if (spin && e.pointerId === spin.id) spin = null;
+  if (pan && e.pointerId === pan.id) pan = null;
+};
 canvas.addEventListener("pointerup", endSpin);
 canvas.addEventListener("pointercancel", endSpin);
 
@@ -984,6 +1014,28 @@ $("toggleList").onclick = (e) => { $("side").classList.toggle("hidden"); e.targe
 if (matchMedia("(max-width: 720px)").matches) { $("side").classList.add("hidden"); $("toggleList").classList.remove("on"); }
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") clearSelection(); });
 $("menuBtn").onclick = () => document.body.classList.toggle("menu");
+
+// Recenter: after a pan, or a tilted fly-to followed by zooming out, the
+// globe can end up at the edge of the screen. This looks straight down at
+// the point beneath the camera, north up, so the globe is centred again.
+function recenter() {
+  unfollow();
+  const c = viewer.camera.positionCartographic;
+  if (!c || ![c.longitude, c.latitude, c.height].every(Number.isFinite)) {
+    viewer.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(5, 30, 2.6e7), duration: 1.0 });
+    return;
+  }
+  const lon = Cesium.Math.toDegrees(c.longitude), lat = Cesium.Math.toDegrees(c.latitude);
+  // Straight down from further out if we were tilted low over the ground.
+  const height = Math.max(c.height, 1.2e6);
+  viewer.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(lon, lat, height),
+    orientation: { heading: 0, pitch: -Cesium.Math.PI_OVER_TWO, roll: 0 }, duration: 1.0 });
+}
+$("center").onclick = recenter;
+
+document.addEventListener("keydown", (e) => {
+  if ((e.key === "c" || e.key === "C" || e.key === "Home") && !e.target.closest("input, textarea")) recenter();
+});
 
 loadSatellites();
 loadLaunches();

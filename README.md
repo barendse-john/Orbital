@@ -368,10 +368,11 @@ satellites (CelesTrak), both free and keyless.
 on your home network - no extra service. It opens in a see-through amber "hologram" view (Real view button switches
 to satellite imagery). It is a CesiumJS globe on the real
 WGS84 ellipsoid (flattened at the poles), with day/night lighting and
-controls: scroll wheel zooms, middle-drag pans (the ground follows the
-cursor), right-drag rotates the globe like a desk globe (sideways spins it
+controls: scroll wheel zooms, middle-drag (or Shift+left-drag on a
+touchpad) pans the view like a 2D map, right-drag rotates the globe like a desk globe (sideways spins it
 about the poles, up/down tips it north/south, north stays up), Ctrl+right-drag
-tilts the view. On a phone, one finger pans and pinch zooms. The globe is
+tilts the view, and ⌖ Center (or the C key) puts the globe back in the
+middle, north up. On a phone, one finger pans and pinch zooms. The globe is
 solid so the far side doesn't distract; the X-ray button makes it see-through. Left-click inspects: a country or ocean
 shows its latest news, a satellite shows its orbit and news about it, a
 launch pad shows the launch and the rocket's specs and news. The layer
