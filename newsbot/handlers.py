@@ -41,6 +41,7 @@ from .digest import DigestService
 from .formatting import article_line, esc
 from .news import NewsFetcher
 from .scheduler import DigestScheduler
+from .space import launch_html, when_text
 
 log = logging.getLogger(__name__)
 
@@ -87,7 +88,10 @@ class BotHandlers:
     def __init__(
         self, cfg, db: Database, ai, fetcher: NewsFetcher,
         digest: DigestService, scheduler: DigestScheduler,
+        space=None, globe_url: str = "",
     ):
+        self.space = space
+        self.globe_url = globe_url
         self.cfg = cfg
         self.db = db
         self.ai = ai
@@ -116,6 +120,8 @@ class BotHandlers:
         app.add_handler(CommandHandler("deny", self.cmd_deny))
         app.add_handler(CommandHandler("requests", self.cmd_requests))
         app.add_handler(CommandHandler("users", self.cmd_users))
+        app.add_handler(CommandHandler("launches", self.cmd_launches))
+        app.add_handler(CommandHandler("launchalerts", self.cmd_launchalerts))
         app.add_handler(
             CallbackQueryHandler(self.on_access_decision, pattern=r"^access:")
         )
@@ -910,6 +916,53 @@ class BotHandlers:
         if not await self._ready_user(update, context):
             return
         await self._dispatch(update, context, Intent(action="resume"))
+
+    # ------------------------------------------------------------- space
+
+    async def cmd_launches(self, update: Update, context) -> None:
+        if not await self._allowed(update, context):
+            return
+        if self.space is None:
+            await update.effective_message.reply_text(
+                "Launch tracking is switched off in config.yaml (space.enabled).")
+            return
+        user = await self.db.get_user(update.effective_user.id)
+        tz = user.timezone if user else None
+        upcoming = self.space.upcoming(limit=5)
+        if not upcoming:
+            await update.effective_message.reply_text(
+                "No launch data yet - it refreshes every "
+                f"{self.cfg.space.launch_refresh_minutes} minutes.")
+            return
+        body = "\n\n".join(launch_html(lnch, tz, self.globe_url)
+                            for lnch in upcoming)
+        alerts = await self.db.launch_alerts_enabled(update.effective_user.id)
+        footer = ("\n\nReminders are on." if alerts else
+                  "\n\n/launchalerts to get a reminder before each one.")
+        if self.globe_url:
+            footer += f'\n<a href="{esc(self.globe_url)}">Open the globe</a>'
+        await update.effective_message.reply_text(
+            body + footer, parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True)
+
+    async def cmd_launchalerts(self, update: Update, context) -> None:
+        if not await self._allowed(update, context):
+            return
+        user_id = update.effective_user.id
+        arg = (context.args[0].lower() if context and context.args else "")
+        if arg in ("on", "off"):
+            enable = arg == "on"
+        else:
+            enable = not await self.db.launch_alerts_enabled(user_id)
+        await self.db.set_launch_alerts(user_id, enable)
+        if enable:
+            leads = sorted(self.cfg.space.remind_before_minutes, reverse=True)
+            when = " and ".join(when_text(m) for m in leads)
+            text = (f"Launch reminders on - {when} before liftoff, for "
+                    "launches marked Go or TBC. /launchalerts again to stop.")
+        else:
+            text = "Launch reminders off."
+        await update.effective_message.reply_text(text)
 
     async def cmd_status(self, update: Update, context) -> None:
         if not await self._allowed(update, context):

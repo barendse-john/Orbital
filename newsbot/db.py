@@ -109,6 +109,18 @@ CREATE TABLE IF NOT EXISTS access_requests (
     decided_by  INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS launch_alerts (
+    user_id    INTEGER PRIMARY KEY,
+    enabled_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS launch_alerts_sent (
+    user_id   INTEGER NOT NULL,
+    alert_key TEXT NOT NULL,
+    sent_at   TEXT NOT NULL,
+    PRIMARY KEY (user_id, alert_key)
+);
+
 CREATE TABLE IF NOT EXISTS admin_users (
     user_id  INTEGER PRIMARY KEY,
     added_by INTEGER,
@@ -737,6 +749,49 @@ class Database:
         return await asyncio.to_thread(_claim)
 
     # ------------------------------------------------------------- stats
+
+    # ------------------------------------------------------ launch alerts
+
+    async def set_launch_alerts(self, user_id: int, enabled: bool) -> None:
+        if enabled:
+            await asyncio.to_thread(
+                self._write,
+                "INSERT OR IGNORE INTO launch_alerts (user_id, enabled_at) "
+                "VALUES (?, ?)", (user_id, _utcnow()))
+        else:
+            await asyncio.to_thread(
+                self._write, "DELETE FROM launch_alerts WHERE user_id = ?",
+                (user_id,))
+
+    async def launch_alerts_enabled(self, user_id: int) -> bool:
+        rows = await asyncio.to_thread(
+            self._read, "SELECT 1 FROM launch_alerts WHERE user_id = ?",
+            (user_id,))
+        return bool(rows)
+
+    async def launch_alert_users(self) -> list[tuple[int, str | None]]:
+        """(user_id, timezone) for everyone who wants launch reminders."""
+        rows = await asyncio.to_thread(
+            self._read,
+            "SELECT a.user_id, u.timezone FROM launch_alerts a "
+            "LEFT JOIN users u ON u.user_id = a.user_id")
+        return [(r[0], r[1]) for r in rows]
+
+    async def claim_launch_alert(self, user_id: int, key: str) -> bool:
+        """True exactly once per (user, reminder) - the caller sends only
+        then, so a restart or an overlapping run can't double-send."""
+        cur = await asyncio.to_thread(
+            self._write,
+            "INSERT OR IGNORE INTO launch_alerts_sent (user_id, alert_key, "
+            "sent_at) VALUES (?, ?, ?)", (user_id, key, _utcnow()))
+        return cur.rowcount == 1
+
+    async def prune_launch_alerts(self, days: int = 60) -> int:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cur = await asyncio.to_thread(
+            self._write, "DELETE FROM launch_alerts_sent WHERE sent_at < ?",
+            (cutoff,))
+        return cur.rowcount
 
     async def stats(self, user_id: int) -> dict:
         def _stats() -> dict:

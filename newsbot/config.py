@@ -96,11 +96,27 @@ class DigestConfig:
 
 
 @dataclass
+class SpaceConfig:
+    enabled: bool = True
+    web_host: str = "0.0.0.0"
+    web_port: int = 8080
+    # What Telegram messages link to. Empty = http://<pi hostname>.local:<port>
+    public_url: str = ""
+    remind_before_minutes: list[int] = field(default_factory=lambda: [1440, 30])
+    launch_refresh_minutes: int = 20
+    satellite_groups: list[str] = field(
+        default_factory=lambda: ["stations", "visual", "gnss", "weather"])
+    satellite_refresh_hours: int = 6
+    max_satellites_per_group: int = 2000
+
+
+@dataclass
 class Config:
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     ai: AIConfig = field(default_factory=AIConfig)
     news: NewsConfig = field(default_factory=NewsConfig)
     digest: DigestConfig = field(default_factory=DigestConfig)
+    space: SpaceConfig = field(default_factory=SpaceConfig)
     database_path: Path = Path("./data/newsbot.db")
     log_level: str = "INFO"
 
@@ -129,6 +145,8 @@ class Config:
         rss = news.get("rss") or {}
         dig = raw.get("digest") or {}
         db = raw.get("database") or {}
+        sp = raw.get("space") or {}
+        sp_defaults = SpaceConfig()
 
         cfg = cls(
             telegram=TelegramConfig(
@@ -167,6 +185,26 @@ class Config:
                 default_time=str(dig.get("default_time") or "08:00"),
                 skip_when_empty=bool(dig.get("skip_when_empty", False)),
                 lead_image=bool(dig.get("lead_image", True)),
+            ),
+            space=SpaceConfig(
+                enabled=bool(sp.get("enabled", True)),
+                web_host=str(sp.get("web_host") or sp_defaults.web_host),
+                web_port=int(sp.get("web_port") or sp_defaults.web_port),
+                public_url=str(sp.get("public_url") or "").rstrip("/"),
+                remind_before_minutes=[int(m) for m in (
+                    sp.get("remind_before_minutes")
+                    or sp_defaults.remind_before_minutes)],
+                launch_refresh_minutes=max(5, int(
+                    sp.get("launch_refresh_minutes")
+                    or sp_defaults.launch_refresh_minutes)),
+                satellite_groups=[str(g) for g in (
+                    sp.get("satellite_groups") or sp_defaults.satellite_groups)],
+                satellite_refresh_hours=max(2, int(
+                    sp.get("satellite_refresh_hours")
+                    or sp_defaults.satellite_refresh_hours)),
+                max_satellites_per_group=int(
+                    sp.get("max_satellites_per_group")
+                    or sp_defaults.max_satellites_per_group),
             ),
             database_path=Path(str(db.get("path") or "./data/newsbot.db")),
             log_level=str(raw.get("log_level") or "INFO").upper(),

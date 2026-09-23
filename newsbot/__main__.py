@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import socket
 import sys
 
 from telegram import BotCommand
@@ -19,6 +20,8 @@ from .digest import DigestService
 from .handlers import BotHandlers
 from .news import NewsFetcher
 from .scheduler import DigestScheduler
+from .space import SpaceService, send_launch_reminders
+from .webapp import start_web
 
 log = logging.getLogger("newsbot")
 
@@ -63,6 +66,8 @@ COMMANDS = [
     BotCommand("timezone", "Set your timezone"),
     BotCommand("pause", "Mute the daily digest"),
     BotCommand("resume", "Unmute the daily digest"),
+    BotCommand("launches", "Upcoming rocket launches"),
+    BotCommand("launchalerts", "Launch reminders on/off"),
     BotCommand("status", "Your settings"),
     BotCommand("users", "Who can use the bot (admins)"),
     BotCommand("requests", "Who has asked to join (admins)"),
@@ -88,10 +93,15 @@ def build_application(cfg: Config) -> Application:
     ai = build_backend(cfg.ai)
     fetcher = NewsFetcher(cfg.news, db)
     digest = DigestService(db, fetcher, ai, cfg)
+    space = (SpaceService(cfg.space, cfg.database_path.parent / "space_cache.json")
+             if cfg.space.enabled else None)
+    globe_url = globe_url_for(cfg) if space else ""
+    web = {}
 
     async def post_init(app: Application) -> None:
         scheduler = DigestScheduler(app, db, digest)
-        handlers = BotHandlers(cfg, db, ai, fetcher, digest, scheduler)
+        handlers = BotHandlers(cfg, db, ai, fetcher, digest, scheduler,
+                               space=space, globe_url=globe_url)
         handlers.register(app)
         app.bot_data.update(
             {"db": db, "ai": ai, "fetcher": fetcher, "digest": digest,
@@ -99,6 +109,10 @@ def build_application(cfg: Config) -> Application:
         )
         await scheduler.reschedule_all()
         scheduler.schedule_maintenance()
+        if space is not None:
+            schedule_space(app, db, space, cfg, globe_url)
+            web["server"] = start_web(space, cfg.space.web_host,
+                                      cfg.space.web_port)
         try:
             await app.bot.set_my_commands(COMMANDS)
         except Exception as exc:  # noqa: BLE001
@@ -107,6 +121,11 @@ def build_application(cfg: Config) -> Application:
         log.info("Running as @%s", me.username)
 
     async def post_shutdown(_app: Application) -> None:
+        if web.get("server"):
+            web["server"].shutdown()
+            web["server"].server_close()
+        if space is not None:
+            await space.close()
         await fetcher.close()
         await ai.close()
         db.close()
@@ -131,6 +150,50 @@ def build_application(cfg: Config) -> Application:
     )
 
 
+def globe_url_for(cfg: Config) -> str:
+    if cfg.space.public_url:
+        return cfg.space.public_url
+    return f"http://{socket.gethostname()}.local:{cfg.space.web_port}"
+
+
+def schedule_space(app: Application, db: Database, space: SpaceService,
+                   cfg: Config, globe_url: str) -> None:
+    """Launch refresh, TLE refresh and the reminder check, all on PTB's job
+    queue. Each callback swallows its own errors: a failed fetch must never
+    unschedule the job."""
+    jq = app.job_queue
+
+    async def launches_job(_ctx) -> None:
+        await space.refresh_launches()
+
+    async def satellites_job(_ctx) -> None:
+        await space.refresh_satellites()
+
+    async def reminders_job(ctx) -> None:
+        try:
+            sent = await send_launch_reminders(
+                ctx.bot, db, space, cfg.space.remind_before_minutes, globe_url)
+            if sent:
+                log.info("Sent %d launch reminder(s)", sent)
+        except Exception:  # noqa: BLE001
+            log.exception("Launch reminder check failed")
+
+    async def prune_job(_ctx) -> None:
+        await db.prune_launch_alerts()
+
+    # Straight after a restart only if the cached copy is stale - the free
+    # Launch Library tier is 15 requests an hour.
+    jq.run_repeating(launches_job, interval=cfg.space.launch_refresh_minutes * 60,
+                     first=5 if space.launches_stale else
+                     cfg.space.launch_refresh_minutes * 60,
+                     name="space-launches")
+    jq.run_repeating(satellites_job, interval=3600, first=20,
+                     name="space-satellites")
+    jq.run_repeating(reminders_job, interval=120, first=45,
+                     name="space-reminders")
+    jq.run_repeating(prune_job, interval=86400, first=3600, name="space-prune")
+
+
 async def _check(cfg: Config) -> int:
     """Validate the setup without starting the bot."""
     ok = True
@@ -148,6 +211,21 @@ async def _check(cfg: Config) -> int:
     print(f"  news       {'OK ' if articles else 'FAIL'} "
           f"({len(articles)} article(s) via {source})")
     ok &= bool(articles)
+
+    if cfg.space.enabled:
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            space = SpaceService(cfg.space, Path(tmp) / "c.json")
+            got = await space.refresh_launches()
+            print(f"  launches   {'OK ' if got else 'FAIL'} "
+                  f"({len(space.launches)} upcoming via Launch Library 2)")
+            n = await space.refresh_satellites(force=True)
+            count = sum(len(v) for v in space.satellites.values())
+            print(f"  orbits     {'OK ' if n else 'FAIL'} "
+                  f"({count} satellites via CelesTrak)")
+            await space.close()
+        print(f"  globe      {globe_url_for(cfg)}")
 
     app = ApplicationBuilder().token(cfg.telegram.token).build()
     try:

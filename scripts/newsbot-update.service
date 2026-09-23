@@ -8,5 +8,5 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=john
-WorkingDirectory=/home/john/newsbot
-ExecStart=/home/john/newsbot/scripts/deploy.sh
+WorkingDirectory=/home/john/Documents/news_bot
+ExecStart=/home/john/Documents/news_bot/scripts/deploy.sh

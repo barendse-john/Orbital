@@ -1,0 +1,539 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Launch Globe</title>
+<meta name="theme-color" content="#05070d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg">
+<link rel="apple-touch-icon" href="/icon.svg">
+<script>window.CESIUM_BASE_URL = "https://cdn.jsdelivr.net/npm/cesium@1.120.0/Build/Cesium/";</script>
+<script src="https://cdn.jsdelivr.net/npm/cesium@1.120.0/Build/Cesium/Cesium.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.120.0/Build/Cesium/Widgets/widgets.css">
+<script src="https://cdn.jsdelivr.net/npm/satellite.js@5.0.0/dist/satellite.min.js"></script>
+<style>
+  :root {
+    --bg: #05070d; --panel: rgba(12, 16, 26, .82); --line: rgba(255,255,255,.10);
+    --text: #e8edf6; --muted: #8d98ad; --accent: #ffb547; --hot: #ff5d4a; --ok: #6be3a4;
+    --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 14px/1.4 var(--font); overflow: hidden; }
+  #globe { position: fixed; inset: 0; }
+  .cesium-viewer-bottom { display: none; }        /* credits live in the About line */
+  a { color: var(--accent); }
+  .glass { background: var(--panel); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border: 1px solid var(--line); border-radius: 12px; }
+
+  #bar { position: fixed; top: 12px; left: 12px; right: 12px; display: flex; gap: 8px;
+    align-items: center; flex-wrap: wrap; pointer-events: none; z-index: 5; }
+  #bar > * { pointer-events: auto; }
+  .brand { padding: 8px 12px; font-weight: 650; letter-spacing: .2px; }
+  .brand small { display: block; font-weight: 400; color: var(--muted); font-size: 11px; }
+  .chips { display: flex; gap: 6px; padding: 6px; flex-wrap: wrap; }
+  button, .chip { font: inherit; color: var(--text); background: rgba(255,255,255,.06);
+    border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; cursor: pointer; }
+  button:hover, .chip:hover { background: rgba(255,255,255,.12); }
+  button.on { background: rgba(255,181,71,.18); border-color: rgba(255,181,71,.55); }
+  .chip { display: inline-flex; align-items: center; gap: 6px; user-select: none; }
+  .chip.off { opacity: .45; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  #clock { padding: 8px 12px; font-variant-numeric: tabular-nums; margin-left: auto; }
+
+  #side { position: fixed; top: 84px; right: 12px; bottom: 12px; width: 330px; display: flex;
+    flex-direction: column; z-index: 4; }
+  #side.hidden { display: none; }
+  #side h2 { margin: 0; padding: 12px 14px 8px; font-size: 13px; text-transform: uppercase;
+    letter-spacing: .8px; color: var(--muted); font-weight: 600; }
+  #list { overflow-y: auto; padding: 0 6px 8px; }
+  .row { padding: 8px; border-radius: 8px; cursor: pointer; display: grid;
+    grid-template-columns: 1fr auto; gap: 2px 8px; }
+  .row:hover, .row.sel { background: rgba(255,255,255,.07); }
+  .row .n { font-weight: 560; grid-column: 1 / 3; }
+  .row .m { color: var(--muted); font-size: 12px; }
+  .row .t { font-variant-numeric: tabular-nums; font-size: 12px; text-align: right; }
+  .st { font-size: 10.5px; padding: 1px 6px; border-radius: 99px; border: 1px solid var(--line); }
+  .st.Go { color: var(--ok); border-color: rgba(107,227,164,.5); }
+  .st.TBC { color: var(--accent); border-color: rgba(255,181,71,.5); }
+
+  #card { position: fixed; left: 12px; bottom: 12px; width: 360px; max-height: 55vh; overflow-y: auto;
+    padding: 14px; z-index: 4; display: none; }
+  #card.show { display: block; }
+  #card h3 { margin: 0 34px 4px 0; font-size: 16px; }
+  #card .x { position: absolute; top: 10px; right: 10px; padding: 2px 8px; }
+  #card img { width: 100%; border-radius: 8px; margin: 8px 0; max-height: 170px; object-fit: cover; }
+  #card dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 8px 0; }
+  #card dt { color: var(--muted); }
+  #card dd { margin: 0; font-variant-numeric: tabular-nums; }
+  #card p { color: #c5ccda; margin: 8px 0; }
+  .links { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .links a, .links button { text-decoration: none; padding: 6px 10px; border-radius: 8px;
+    border: 1px solid rgba(255,181,71,.5); background: rgba(255,181,71,.12); color: var(--text); }
+
+  /* Launch tags pinned above their pad */
+  #tags { position: fixed; inset: 0; pointer-events: none; z-index: 3; }
+  .tag { position: absolute; transform: translate(-50%, -100%); pointer-events: auto;
+    padding-bottom: 34px; }
+  .tag::after { content: ""; position: absolute; left: 50%; bottom: 0; width: 1.5px; height: 34px;
+    background: linear-gradient(var(--accent), transparent); }
+  .tag .box { padding: 7px 10px; min-width: 150px; max-width: 220px; text-align: center; }
+  .tag .nm { font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; cursor: pointer; }
+  .tag .cd { font-variant-numeric: tabular-nums; color: var(--accent); font-size: 13px; }
+  .tag a { display: inline-block; margin-top: 3px; font-size: 12px; font-weight: 600; }
+  .tag .more { color: var(--muted); font-size: 11px; }
+  .tag.hot .box { border-color: rgba(255,93,74,.7); box-shadow: 0 0 0 0 rgba(255,93,74,.6);
+    animation: pulse 1.8s infinite; }
+  .tag.hot .cd { color: var(--hot); }
+  @keyframes pulse { 70% { box-shadow: 0 0 0 10px rgba(255,93,74,0); } 100% { box-shadow: 0 0 0 0 rgba(255,93,74,0); } }
+
+  #msg { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 16px 20px;
+    display: none; z-index: 9; max-width: 90vw; text-align: center; }
+  #about { position: fixed; left: 12px; bottom: 6px; font-size: 10.5px; color: var(--muted); z-index: 2; }
+  #card.show ~ #about { display: none; }
+
+  @media (max-width: 720px) {
+    #side { top: auto; left: 8px; right: 8px; width: auto; height: 38vh; bottom: 8px; }
+    #card { left: 8px; right: 8px; width: auto; bottom: 8px; max-height: 50vh; z-index: 6; }
+    #clock { display: none; }
+    .brand small { display: none; }
+    #bar { top: 8px; left: 8px; right: 8px; }
+  }
+</style>
+</head>
+<body>
+<div id="globe"></div>
+<div id="tags"></div>
+
+<div id="bar">
+  <div class="glass brand">Launch Globe<small>WGS84 ellipsoid · live SGP4 orbits</small></div>
+  <div class="glass chips" id="groups"></div>
+  <div class="glass chips">
+    <button data-speed="1" class="on">1×</button>
+    <button data-speed="60">60×</button>
+    <button data-speed="600">600×</button>
+    <button id="now">Now</button>
+    <button id="toggleList" class="on">Launches</button>
+  </div>
+  <div class="glass" id="clock">--</div>
+</div>
+
+<div id="side" class="glass">
+  <h2>Upcoming launches</h2>
+  <div id="list"></div>
+</div>
+
+<div id="card" class="glass"></div>
+<div id="msg" class="glass"></div>
+<div id="about">Launches: The Space Devs · Orbits: CelesTrak · Imagery: Esri, Natural Earth · CesiumJS</div>
+
+<script>
+"use strict";
+const SOON_HOURS = 72;      // launches closer than this get a tag above their pad
+const HOT_MINUTES = 60;     // ...and pulse red inside the last hour
+const GROUP_COLORS = {
+  stations: "#ffcc4d", visual: "#9fd3ff", gnss: "#7dffb0", "gps-ops": "#7dffb0",
+  galileo: "#7dffb0", weather: "#d6a2ff", starlink: "#f2f2f2", science: "#ff9ecb",
+  geo: "#ff8a5c", active: "#b8c4d9",
+};
+const GROUP_NAMES = { stations: "Space stations", visual: "Brightest", gnss: "GNSS",
+  weather: "Weather", starlink: "Starlink", science: "Science", geo: "GEO", active: "All active" };
+
+const $ = (id) => document.getElementById(id);
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+function showMsg(text) { const m = $("msg"); m.textContent = text; m.style.display = text ? "block" : "none"; }
+
+if (typeof Cesium === "undefined" || typeof satellite === "undefined") {
+  showMsg("Couldn't load the 3D engine from the internet. Check this device's connection and reload.");
+  throw new Error("libraries missing");
+}
+
+// ------------------------------------------------------------------ viewer
+// No Cesium ion account needed: the base layer ships with Cesium, and Esri
+// imagery is drawn on top. The default terrain is the WGS84 ellipsoid, so the
+// globe is flattened at the poles like the real Earth (a = 6378.137 km,
+// b = 6356.752 km).
+const viewer = new Cesium.Viewer("globe", {
+  baseLayer: Cesium.ImageryLayer.fromProviderAsync(
+    Cesium.TileMapServiceImageryProvider.fromUrl(Cesium.buildModuleUrl("Assets/Textures/NaturalEarthII"))),
+  baseLayerPicker: false, geocoder: false, homeButton: false, sceneModePicker: false,
+  navigationHelpButton: false, animation: false, timeline: false, fullscreenButton: false,
+  infoBox: false, selectionIndicator: false, shouldAnimate: true,
+});
+viewer.imageryLayers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({
+  url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  maximumLevel: 19, credit: "Esri, Maxar, Earthstar Geographics",
+}));
+const scene = viewer.scene;
+scene.globe.enableLighting = true;            // real day/night terminator
+scene.globe.showGroundAtmosphere = true;
+scene.fog.enabled = true;
+scene.screenSpaceCameraController.minimumZoomDistance = 200;
+scene.screenSpaceCameraController.maximumZoomDistance = 2.0e8;   // far enough to see GEO
+viewer.clock.clockStep = Cesium.ClockStep.SYSTEM_CLOCK_MULTIPLIER;
+viewer.clock.currentTime = Cesium.JulianDate.now();
+viewer.clock.multiplier = 1;
+viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(5, 30, 2.6e7) });
+
+const clockDate = () => Cesium.JulianDate.toDate(viewer.clock.currentTime);
+
+// -------------------------------------------------------------- satellites
+const points = scene.primitives.add(new Cesium.PointPrimitiveCollection());
+const orbitLines = scene.primitives.add(new Cesium.PolylineCollection());
+let sats = [];
+const hiddenGroups = new Set(["starlink", "active"]);   // thousands of dots; opt in
+let selectedSat = null, followEntity = null, orbitEntity = null, lastOrbit = 0;
+
+function satEcf(sat, date) {
+  const pv = satellite.propagate(sat.satrec, date);
+  if (!pv || !pv.position || typeof pv.position !== "object") return null;
+  const gmst = satellite.gstime(date);
+  return { ecf: satellite.eciToEcf(pv.position, gmst), eci: pv.position, vel: pv.velocity, gmst };
+}
+function toCart(ecf, result) {
+  return Cesium.Cartesian3.fromElements(ecf.x * 1000, ecf.y * 1000, ecf.z * 1000, result);
+}
+
+async function loadSatellites() {
+  let data;
+  try { data = await (await fetch("/api/satellites", { cache: "no-store" })).json(); }
+  catch (e) { console.warn("satellites", e); return; }
+  points.removeAll();
+  sats = [];
+  const chips = $("groups");
+  chips.replaceChildren();
+  for (const [group, list] of Object.entries(data.groups || {})) {
+    const color = Cesium.Color.fromCssColorString(GROUP_COLORS[group] || "#b8c4d9");
+    const big = group === "stations";
+    let count = 0;
+    for (const [name, l1, l2] of list) {
+      let satrec;
+      try { satrec = satellite.twoline2satrec(l1, l2); } catch (e) { continue; }
+      if (!satrec || satrec.error) continue;
+      const sat = { name, group, satrec, color };
+      sat.point = points.add({
+        position: Cesium.Cartesian3.ZERO, color, pixelSize: big ? 8 : 3.5,
+        outlineColor: Cesium.Color.BLACK.withAlpha(0.6), outlineWidth: big ? 1.5 : 0.5,
+        show: !hiddenGroups.has(group), id: sat,
+      });
+      sats.push(sat); count++;
+    }
+    const chip = el("span", "chip" + (hiddenGroups.has(group) ? " off" : ""));
+    const dot = el("span", "dot"); dot.style.background = GROUP_COLORS[group] || "#b8c4d9";
+    chip.append(dot, el("span", null, `${GROUP_NAMES[group] || group} ${count}`));
+    chip.onclick = () => {
+      hiddenGroups.has(group) ? hiddenGroups.delete(group) : hiddenGroups.add(group);
+      chip.classList.toggle("off", hiddenGroups.has(group));
+      for (const s of sats) if (s.group === group) s.point.show = !hiddenGroups.has(group);
+    };
+    chips.append(chip);
+  }
+  updateSatellites(true);
+}
+
+let lastSatUpdate = 0;
+const scratch = new Cesium.Cartesian3();
+function updateSatellites(force) {
+  const now = performance.now();
+  // Propagating every satellite every frame is wasted work at 1x; ~20 Hz is
+  // smooth to the eye. Big groups get a slower cadence.
+  const every = sats.length > 3000 ? 200 : 50;
+  if (!force && now - lastSatUpdate < every) return;
+  lastSatUpdate = now;
+  const date = clockDate();
+  for (const s of sats) {
+    if (!s.point.show) continue;
+    const p = satEcf(s, date);
+    if (p) { s.point.position = toCart(p.ecf, scratch); }
+  }
+}
+
+function drawOrbit(sat, date) {
+  // One full revolution, drawn in the inertial frame and rotated into the
+  // Earth frame at the current instant - so it's the closed ellipse the
+  // satellite is flying, not a ground track.
+  const periodMin = (2 * Math.PI) / sat.satrec.no;
+  const gmst = satellite.gstime(date);
+  const pts = [];
+  const steps = 240;
+  for (let i = 0; i <= steps; i++) {
+    const t = new Date(date.getTime() + (i / steps) * periodMin * 60000);
+    const pv = satellite.propagate(sat.satrec, t);
+    if (!pv || !pv.position || typeof pv.position !== "object") continue;
+    pts.push(toCart(satellite.eciToEcf(pv.position, gmst)));
+  }
+  // A PolylineCollection updates synchronously; an Entity polyline rebuilds
+  // its geometry on a worker every time and never settled at this rate.
+  if (!orbitEntity) {
+    orbitEntity = orbitLines.add({ positions: pts, width: 1.6,
+      material: Cesium.Material.fromType("Color", { color: sat.color.withAlpha(0.85) }) });
+  } else {
+    orbitEntity.positions = pts;
+    orbitEntity.material.uniforms.color = sat.color.withAlpha(0.85);
+  }
+  orbitEntity.show = true;
+}
+
+function selectSat(sat) {
+  selectedSat = sat; selectedLaunch = null; lastOrbit = 0;
+  renderSatCard();
+}
+function clearSelection() {
+  selectedSat = null; selectedLaunch = null;
+  if (orbitEntity) orbitEntity.show = false;
+  unfollow();
+  $("card").classList.remove("show");
+  document.querySelectorAll(".row.sel").forEach(r => r.classList.remove("sel"));
+}
+function follow(sat) {
+  unfollow();
+  followEntity = viewer.entities.add({
+    position: new Cesium.CallbackProperty((time) => {
+      const p = satEcf(sat, Cesium.JulianDate.toDate(time));
+      return p ? toCart(p.ecf) : undefined;
+    }, false),
+    point: { pixelSize: 1, color: Cesium.Color.TRANSPARENT },
+    viewFrom: new Cesium.Cartesian3(-2.5e6, -2.5e6, 1.5e6),
+  });
+  viewer.trackedEntity = followEntity;
+}
+function unfollow() {
+  viewer.trackedEntity = undefined;
+  if (followEntity) { viewer.entities.remove(followEntity); followEntity = null; }
+}
+
+function renderSatCard() {
+  const s = selectedSat; if (!s) return;
+  const date = clockDate();
+  const p = satEcf(s, date);
+  const card = $("card");
+  card.replaceChildren();
+  const x = el("button", "x", "✕"); x.onclick = clearSelection;
+  card.append(x, el("h3", null, s.name));
+  const dl = el("dl");
+  const add = (k, v) => dl.append(el("dt", null, k), el("dd", null, v));
+  add("Group", GROUP_NAMES[s.group] || s.group);
+  add("NORAD ID", s.satrec.satnum);
+  if (p) {
+    const geo = satellite.eciToGeodetic(p.eci, p.gmst);
+    const v = Math.hypot(p.vel.x, p.vel.y, p.vel.z);
+    add("Altitude", `${geo.height.toFixed(0)} km`);
+    add("Speed", `${v.toFixed(2)} km/s`);
+    add("Over", `${satellite.degreesLat(geo.latitude).toFixed(2)}°, ${satellite.degreesLong(geo.longitude).toFixed(2)}°`);
+  }
+  add("Inclination", `${(s.satrec.inclo * 180 / Math.PI).toFixed(2)}°`);
+  add("Period", `${((2 * Math.PI) / s.satrec.no).toFixed(1)} min`);
+  add("Eccentricity", s.satrec.ecco.toFixed(5));
+  card.append(dl);
+  const links = el("div", "links");
+  const f = el("button", null, followEntity ? "Stop following" : "Follow");
+  f.onclick = () => { followEntity ? unfollow() : follow(s); renderSatCard(); };
+  const n2yo = el("a", null, "Tracking page");
+  n2yo.href = `https://www.n2yo.com/satellite/?s=${encodeURIComponent(s.satrec.satnum)}`;
+  n2yo.target = "_blank"; n2yo.rel = "noopener";
+  links.append(f, n2yo);
+  card.append(links);
+  card.classList.add("show");
+}
+
+// ---------------------------------------------------------------- launches
+let launches = [];
+let selectedLaunch = null;
+const padEntities = new Map();    // pad key -> entity
+const tagEls = new Map();         // pad key -> tag element
+
+const padKey = (l) => `${l.lat.toFixed(3)},${l.lon.toFixed(3)}`;
+const netMs = (l) => Date.parse(l.net);
+
+function countdown(ms) {
+  const neg = ms < 0; ms = Math.abs(ms);
+  const d = Math.floor(ms / 864e5), h = Math.floor(ms / 36e5) % 24,
+        m = Math.floor(ms / 6e4) % 60, s = Math.floor(ms / 1e3) % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return (neg ? "T+" : "T-") + (d ? `${d}d ` : "") + `${pad(h)}:${pad(m)}:${pad(s)}`;
+}
+const fmtLocal = (ms) => new Date(ms).toLocaleString([], { weekday: "short", day: "numeric",
+  month: "short", hour: "2-digit", minute: "2-digit" });
+
+function linkFor(l) {
+  const a = el("a", null, l.stream_url ? "▶ Watch live" : "Details ↗");
+  a.href = l.stream_url || l.info_url; a.target = "_blank"; a.rel = "noopener";
+  return a;
+}
+
+async function loadLaunches() {
+  let data;
+  try { data = await (await fetch("/api/launches", { cache: "no-store" })).json(); }
+  catch (e) { console.warn("launches", e); return; }
+  launches = (data.launches || []).filter(l => isFinite(l.lat) && isFinite(l.lon));
+  for (const e of padEntities.values()) viewer.entities.remove(e);
+  padEntities.clear();
+  for (const t of tagEls.values()) t.remove();
+  tagEls.clear();
+
+  const byPad = new Map();
+  for (const l of launches) {
+    const k = padKey(l);
+    if (!byPad.has(k)) byPad.set(k, []);
+    byPad.get(k).push(l);
+  }
+  for (const [k, list] of byPad) {
+    list.sort((a, b) => netMs(a) - netMs(b));
+    const ent = viewer.entities.add({
+      position: Cesium.Cartesian3.fromDegrees(list[0].lon, list[0].lat, 0),
+      point: { pixelSize: 9, color: Cesium.Color.fromCssColorString("#ffb547"),
+        outlineColor: Cesium.Color.BLACK, outlineWidth: 2,
+        disableDepthTestDistance: 0 },
+    });
+    ent.padLaunches = list;
+    padEntities.set(k, ent);
+  }
+  renderList();
+  if (!window.__deepLinked) {
+    window.__deepLinked = true;
+    const m = location.hash.match(/launch=([^&]+)/);
+    if (m) { const l = launches.find(x => x.id === decodeURIComponent(m[1])); if (l) selectLaunch(l, true); }
+  }
+}
+
+function renderList() {
+  const list = $("list");
+  list.replaceChildren();
+  const now = clockDate().getTime();
+  const upcoming = launches.filter(l => netMs(l) > now - 3600e3);
+  if (!upcoming.length) { list.append(el("div", "row", "No launch data yet - the Pi fetches it every 20 minutes.")); return; }
+  for (const l of upcoming) {
+    const r = el("div", "row" + (selectedLaunch && selectedLaunch.id === l.id ? " sel" : ""));
+    r.append(el("div", "n", l.name));
+    const meta = el("div", "m", `${fmtLocal(netMs(l))} · ${l.location || l.pad}`);
+    const right = el("div", "t");
+    right.dataset.net = l.net;
+    right.textContent = countdown(netMs(l) - now);
+    r.append(meta, right);
+    if (l.status) { const st = el("span", "st " + l.status, l.status); meta.prepend(st, " "); }
+    r.onclick = () => selectLaunch(l, true);
+    list.append(r);
+  }
+}
+
+function selectLaunch(l, fly) {
+  selectedSat = null; unfollow();
+  if (orbitEntity) orbitEntity.show = false;
+  selectedLaunch = l;
+  if (fly) viewer.camera.flyToBoundingSphere(
+    new Cesium.BoundingSphere(Cesium.Cartesian3.fromDegrees(l.lon, l.lat, 0), 1),
+    { offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-50), 4.0e6), duration: 2.2 });
+  const card = $("card");
+  card.replaceChildren();
+  const x = el("button", "x", "✕"); x.onclick = clearSelection;
+  card.append(x, el("h3", null, l.name));
+  if (l.image) { const img = el("img"); img.src = l.image; img.alt = ""; img.onerror = () => img.remove(); card.append(img); }
+  const dl = el("dl");
+  const add = (k, v) => { if (v) dl.append(el("dt", null, k), el("dd", null, v)); };
+  const cd = el("dd", null, ""); cd.dataset.net = l.net;
+  dl.append(el("dt", null, "Countdown"), cd);
+  add("Liftoff", `${fmtLocal(netMs(l))} (${new Date(netMs(l)).toISOString().slice(11, 16)} UTC)`);
+  add("Status", l.status_name || l.status);
+  add("Rocket", l.rocket);
+  add("Provider", l.provider);
+  add("Orbit", l.orbit);
+  add("Pad", [l.pad, l.location].filter(Boolean).join(", "));
+  card.append(dl);
+  if (l.mission) card.append(el("p", null, l.mission));
+  const links = el("div", "links");
+  links.append(linkFor(l));
+  if (l.stream_url) { const d = el("a", null, "Details ↗"); d.href = l.info_url; d.target = "_blank"; d.rel = "noopener"; links.append(d); }
+  card.append(links);
+  card.classList.add("show");
+  renderList();
+  history.replaceState(null, "", "#launch=" + encodeURIComponent(l.id));
+}
+
+// Tags: HTML cards glued above the pad of every launch within SOON_HOURS,
+// hidden when the pad is on the far side of the Earth.
+const winPos = new Cesium.Cartesian2();
+const toWindow = (Cesium.SceneTransforms.worldToWindowCoordinates || Cesium.SceneTransforms.wgs84ToWindowCoordinates);
+function updateTags() {
+  const now = clockDate().getTime();
+  const occluder = new Cesium.EllipsoidalOccluder(Cesium.Ellipsoid.WGS84, viewer.camera.positionWC);
+  for (const [k, ent] of padEntities) {
+    const soon = ent.padLaunches.filter(l => {
+      const dt = netMs(l) - now; return dt > -3600e3 && dt < SOON_HOURS * 3600e3; });
+    let tag = tagEls.get(k);
+    if (!soon.length) { if (tag) { tag.remove(); tagEls.delete(k); } continue; }
+    const l = soon[0];
+    if (!tag || tag.dataset.id !== l.id) {
+      if (tag) tag.remove();
+      tag = el("div", "tag");
+      tag.dataset.id = l.id;
+      const box = el("div", "box glass");
+      const nm = el("div", "nm", l.name); nm.title = l.name; nm.onclick = () => selectLaunch(l, true);
+      const cdEl = el("div", "cd"); cdEl.dataset.net = l.net;
+      box.append(nm, cdEl, linkFor(l));
+      if (soon.length > 1) box.append(el("div", "more", `+${soon.length - 1} more from this pad`));
+      tag.append(box);
+      $("tags").append(tag);
+      tagEls.set(k, tag);
+    }
+    const pos = ent.position.getValue(viewer.clock.currentTime);
+    const visible = occluder.isPointVisible(pos) && toWindow(scene, pos, winPos);
+    tag.style.display = visible ? "block" : "none";
+    if (visible) { tag.style.left = winPos.x + "px"; tag.style.top = winPos.y + "px"; }
+    tag.classList.toggle("hot", netMs(l) - now < HOT_MINUTES * 60e3);
+  }
+}
+
+function tickCountdowns() {
+  const now = clockDate().getTime();
+  document.querySelectorAll("[data-net]").forEach(e => { e.textContent = countdown(Date.parse(e.dataset.net) - now); });
+  const d = clockDate();
+  $("clock").textContent = d.toISOString().slice(0, 19).replace("T", " ") + " UTC" +
+    (viewer.clock.multiplier !== 1 ? `  ·  ${viewer.clock.multiplier}×` : "");
+  if (selectedSat) renderSatCard();
+}
+
+// ------------------------------------------------------------------- wiring
+scene.preUpdate.addEventListener(() => {
+  updateSatellites(false);
+  if (selectedSat && performance.now() - lastOrbit > 2000) { lastOrbit = performance.now(); drawOrbit(selectedSat, clockDate()); }
+});
+scene.postRender.addEventListener(updateTags);
+
+new Cesium.ScreenSpaceEventHandler(scene.canvas).setInputAction((click) => {
+  const picked = scene.pick(click.position);
+  const id = picked && picked.id;
+  if (id && id.satrec) selectSat(id);
+  else if (id && id.padLaunches) selectLaunch(id.padLaunches.find(l => netMs(l) > clockDate().getTime() - 3600e3) || id.padLaunches[0], false);
+}, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+document.querySelectorAll("[data-speed]").forEach(b => b.onclick = () => {
+  viewer.clock.multiplier = Number(b.dataset.speed);
+  document.querySelectorAll("[data-speed]").forEach(x => x.classList.toggle("on", x === b));
+});
+$("now").onclick = () => {
+  viewer.clock.currentTime = Cesium.JulianDate.now(); viewer.clock.multiplier = 1;
+  document.querySelectorAll("[data-speed]").forEach(x => x.classList.toggle("on", x.dataset.speed === "1"));
+};
+$("toggleList").onclick = (e) => { $("side").classList.toggle("hidden"); e.target.classList.toggle("on"); };
+if (matchMedia("(max-width: 720px)").matches) { $("side").classList.add("hidden"); $("toggleList").classList.remove("on"); }
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") clearSelection(); });
+
+loadSatellites();
+loadLaunches();
+setInterval(tickCountdowns, 1000);
+setInterval(loadLaunches, 5 * 60e3);
+setInterval(loadSatellites, 60 * 60e3);
+setInterval(renderList, 60e3);
+</script>
+</body>
+</html>

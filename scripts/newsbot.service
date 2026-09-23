@@ -2,7 +2,7 @@
 #   sudo cp scripts/newsbot.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now newsbot
-# Adjust User and the two paths if your project doesn't live in /home/john/newsbot.
+# Adjust User and the two paths if your project doesn't live in /home/john/Documents/news_bot.
 
 [Unit]
 Description=Telegram news bot
@@ -12,8 +12,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=john
-WorkingDirectory=/home/john/newsbot
-ExecStart=/home/john/newsbot/.venv/bin/python -m newsbot --config /home/john/newsbot/config.yaml
+WorkingDirectory=/home/john/Documents/news_bot
+ExecStart=/home/john/Documents/news_bot/.venv/bin/python -m newsbot --config /home/john/Documents/news_bot/config.yaml
 Restart=always
 RestartSec=10
 # Don't hammer Telegram if something is badly broken

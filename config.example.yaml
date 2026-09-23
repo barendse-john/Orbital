@@ -51,6 +51,24 @@ digest:
   # RSS-only days the digest is quietly text as before.
   lead_image: true
 
+space:
+  # Rocket launch reminders and the 3D globe web app.
+  enabled: true
+  # The globe is served from the Pi on your home network.
+  web_host: 0.0.0.0
+  web_port: 8080
+  # What reminder links point at. Empty = http://<pi hostname>.local:8080
+  public_url: ""
+  # Remind this many minutes before liftoff (for launches marked Go/TBC).
+  remind_before_minutes: [1440, 30]
+  # Launch Library 2 free tier: 15 requests/hour. Don't go below 5.
+  launch_refresh_minutes: 20
+  # CelesTrak groups shown on the globe. Others: starlink (~7000), science,
+  # geo, active (~10000 - heavy on a phone).
+  satellite_groups: [stations, visual, gnss, weather]
+  satellite_refresh_hours: 6
+  max_satellites_per_group: 2000
+
 database:
   path: ./data/newsbot.db
 

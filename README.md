@@ -352,3 +352,31 @@ asks for a city name instead; nothing else changes.
 
 **Summaries look like raw blurbs** - the model call failed and the bot fell
 back. Check the logs for the reason (bad key, rate limit, Ollama not running).
+
+---
+
+## Rocket launches and the globe
+
+The bot also tracks rocket launches (The Space Devs' Launch Library 2) and
+satellites (CelesTrak), both free and keyless.
+
+- `/launches` - the next five launches, in your timezone, with livestream links.
+- `/launchalerts` - toggle reminders a day and 30 minutes before liftoff
+  (launches marked Go or TBC; a launch that slips is reminded again).
+
+**The globe** is served by the bot itself at `http://<pi-hostname>.local:8080`
+on your home network - no extra service. It's a CesiumJS globe on the real
+WGS84 ellipsoid (flattened at the poles), with day/night lighting and
+Google-Earth-style controls: drag to rotate, scroll or pinch to zoom,
+right-drag or two-finger drag to tilt. Launches in the next 72 hours get a
+card pinned above their pad with a live countdown and link (pulsing red in the
+last hour). Satellites fly on their actual orbits, propagated with SGP4 in the
+browser; tap one for altitude, speed and its full orbit, or Follow it. The
+1x/60x/600x buttons speed time up.
+
+On a phone, open the page and use "Add to Home Screen" to get it as an app.
+The page loads its 3D engine from cdn.jsdelivr.net, so the viewing device
+needs internet (the Pi only serves the page and data).
+
+Settings live under `space:` in `config.yaml` (see `config.example.yaml`);
+without that section the defaults apply.
