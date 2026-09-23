@@ -368,9 +368,11 @@ satellites (CelesTrak), both free and keyless.
 on your home network - no extra service. It opens in a see-through amber "hologram" view (Real view button switches
 to satellite imagery). It is a CesiumJS globe on the real
 WGS84 ellipsoid (flattened at the poles), with day/night lighting and
-controls: scroll wheel zooms, right-drag rotates the globe, middle-drag
-pans sideways like a 2D map (Ctrl+right-drag tilts; on a phone, one-finger
-drag rotates and pinch zooms). Left-click inspects: a country or ocean
+controls: scroll wheel zooms, middle-drag pans (the ground follows the
+cursor), right-drag rotates the view around the point you're looking at
+(sideways turns, up/down tilts). On a phone, one finger pans and pinch
+zooms. The globe is near-solid so the far side doesn't distract; the X-ray
+button makes it see-through. Left-click inspects: a country or ocean
 shows its latest news, a satellite shows its orbit and news about it, a
 launch pad shows the launch and the rocket's specs and news. The layer
 buttons (Sats, Launches, Grid, Rings, Borders) hide things you don't want.
@@ -387,3 +389,39 @@ needs internet (the Pi only serves the page and data).
 
 Settings live under `space:` in `config.yaml` (see `config.example.yaml`);
 without that section the defaults apply.
+
+## The phone app (Orbital)
+
+`/app` on the Pi is an installable app: upcoming launches with countdowns,
+Watch / launch-page / calendar buttons, your news briefing and topics, and
+notifications for launch reminders and the daily briefing.
+
+**Make it reachable over https** (Android only installs apps and allows
+notifications over https). With Tailscale on the Pi and the phone:
+
+```bash
+sudo tailscale serve --bg 8080          # https://<pi-name>.<tailnet>.ts.net
+```
+
+MagicDNS and HTTPS certificates must be on in the Tailscale admin console
+(DNS page). Then put that address in `config.yaml` so Telegram links use it:
+
+```yaml
+space:
+  public_url: https://jb.your-tailnet.ts.net
+```
+
+**Pair your phone:** send `/app` to the bot, open the link on the phone, then
+Chrome ⋮ → Install app, and switch on notifications in its Settings tab.
+`/app unpair` signs every phone out.
+
+**Calendar:** every launch has "+ Google Calendar" and "+ .ics" buttons. The
+whole schedule is a feed at `/calendar.ics`. Google Calendar can only
+subscribe to a public link; to allow that for the feed alone:
+
+```bash
+sudo tailscale funnel --bg --https=8443 --set-path=/calendar.ics http://127.0.0.1:8080/calendar.ics
+```
+
+then add `https://<pi-name>.<tailnet>.ts.net:8443/calendar.ics` in Google
+Calendar → Other calendars → From URL. Google refreshes it every few hours.

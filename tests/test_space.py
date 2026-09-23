@@ -8,7 +8,7 @@ from pathlib import Path
 
 from newsbot.config import SpaceConfig
 from newsbot.db import Database
-from newsbot.space import (SpaceService, alert_key, due_reminders, launch_html,
+from newsbot.space import (SpaceService, launches_ics, alert_key, due_reminders, launch_html,
                            parse_launch, parse_tle)
 from newsbot.news.models import Article
 from newsbot.webapp import NewsProxy, start_web
@@ -67,9 +67,30 @@ class ParseTests(unittest.TestCase):
         self.assertIsNone(parse_launch(raw_launch(net=None)))
         self.assertIsNone(parse_launch("nope"))
 
-    def test_no_stream_falls_back_to_details(self):
-        lnch = parse_launch(raw_launch(vid_urls=[]))
-        self.assertTrue(lnch.link.startswith("https://www.google.com/search"))
+    def test_no_stream_falls_back_to_launch_page_never_google(self):
+        lnch = parse_launch(raw_launch(vid_urls=[], slug="f9-sl-10-5"))
+        self.assertEqual(lnch.link, "https://spacelaunchnow.me/launch/f9-sl-10-5/")
+        lnch = parse_launch(raw_launch(vid_urls=[], info_urls=[
+            {"url": "https://nextspaceflight.com/launches/1"},
+            {"url": "https://www.spacex.com/launches/sl-10-5"}]))
+        self.assertEqual(lnch.link, "https://www.spacex.com/launches/sl-10-5")
+
+    def test_youtube_and_the_providers_own_stream_win(self):
+        lnch = parse_launch(raw_launch(vid_urls=[
+            {"url": "https://x.com/SpaceX/status/1", "publisher": "SpaceX"},
+            {"url": "https://www.youtube.com/watch?v=fan", "publisher": "Fan Channel"},
+            {"url": "https://www.youtube.com/watch?v=own", "publisher": "SpaceX"}]))
+        self.assertEqual(lnch.link, "https://www.youtube.com/watch?v=own")
+
+    def test_calendar_feed(self):
+        lnch = parse_launch(raw_launch(name="Falcon 9 | Starlink, Group; 10-5"))
+        ics = launches_ics([lnch], "http://jb:8080", NOW).decode()
+        self.assertIn("BEGIN:VCALENDAR", ics)
+        self.assertIn("UID:abc-1@newsbot-launches", ics)
+        self.assertIn("DTSTART:20260920T122500Z", ics)
+        self.assertIn("Starlink\\, Group\\; 10-5", ics)
+        self.assertIn("TRIGGER:-PT30M", ics)
+        self.assertTrue(all(len(l.encode()) <= 75 for l in ics.split("\r\n")))
 
     def test_tle_resyncs_past_garbage(self):
         sats = parse_tle(TLE, limit=10)

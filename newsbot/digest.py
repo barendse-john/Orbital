@@ -22,6 +22,8 @@ log = logging.getLogger(__name__)
 
 class DigestService:
     def __init__(self, db: Database, fetcher: NewsFetcher, ai, cfg):
+        self.app = None          # AppService, attached in __main__
+        self.last_items: dict[int, list[dict]] = {}
         self.db = db
         self.fetcher = fetcher
         self.ai = ai
@@ -98,6 +100,14 @@ class DigestService:
             user.user_id, [(a.key, a.url) for a in flat]
         )
 
+        # Structured copy for the app's News tab.
+        self.last_items[user.user_id] = [
+            {"topic": label, "title": a.title, "url": a.url, "source": a.source,
+             "summary": a.summary or a.description,
+             "published": a.published_at.isoformat() if a.published_at else "",
+             "image": a.image_url}
+            for label, arts in per_topic for a in arts]
+
         blocks = [formatting.topic_block(label, arts) for label, arts in per_topic]
         lead = _pick_lead(flat)
         # One line that explains any "why no picture?" without guesswork.
@@ -110,8 +120,19 @@ class DigestService:
     # ------------------------------------------------------------- sending
 
     async def send_digest(self, bot, user: User, *, manual: bool = False) -> int:
-        """Deliver the digest. Returns how many articles were sent."""
+        """Deliver the digest. Returns how many articles were sent.
+
+        With the app attached, the briefing is also saved for the app's News
+        tab and announced by push; the user can switch the Telegram copy off.
+        """
+        self.last_items.pop(user.user_id, None)
         blocks, empty, count, lead = await self.collect(user)
+        items = self.last_items.pop(user.user_id, [])
+        if self.app is not None and items:
+            await self.app.on_briefing(user.user_id, items)
+        if (self.app is not None and not manual
+                and not await self.app.wants_telegram_digest(user.user_id)):
+            return count
 
         if not count:
             if manual:

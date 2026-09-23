@@ -22,9 +22,8 @@ import json
 import logging
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import quote_plus
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -109,12 +108,9 @@ def parse_launch(raw: dict) -> Launch | None:
     location = pad.get("location") or {}
     provider = raw.get("launch_service_provider") or {}
 
-    stream = ""
-    for vid in raw.get("vid_urls") or raw.get("vidURLs") or []:
-        url = vid.get("url") if isinstance(vid, dict) else vid
-        if isinstance(url, str) and url.startswith(("http://", "https://")):
-            stream = url
-            break
+    stream = pick_stream(raw.get("vid_urls") or raw.get("vidURLs") or [],
+                         provider.get("name", ""))
+    info = pick_info(raw, provider, rocket)
 
     image = raw.get("image")
     if isinstance(image, dict):
@@ -139,9 +135,68 @@ def parse_launch(raw: dict) -> Launch | None:
         lat=lat,
         lon=lon,
         stream_url=stream,
-        info_url="https://www.google.com/search?q=" + quote_plus(name + " launch"),
+        info_url=info,
         image=image,
     )
+
+
+def _http(url) -> bool:
+    return isinstance(url, str) and url.startswith(("http://", "https://"))
+
+
+def _links(items) -> list[dict]:
+    out = []
+    for item in items or []:
+        if isinstance(item, str):
+            item = {"url": item}
+        if isinstance(item, dict) and _http(item.get("url")):
+            out.append(item)
+    return out
+
+
+def _is_youtube(url: str) -> bool:
+    return any(h in url for h in ("youtube.com/", "youtu.be/"))
+
+
+def pick_stream(vids, provider_name: str = "") -> str:
+    """The livestream to open: YouTube first (it's what John asked for and
+    what opens in-app on a phone), the provider's own channel before
+    re-streamers, and a stream marked live before a placeholder."""
+    provider = (provider_name or "").lower().split()[0] if provider_name else ""
+
+    def score(v: dict) -> tuple:
+        url = v["url"]
+        who = " ".join(str(v.get(k) or "") for k in ("publisher", "source", "title")).lower()
+        return (
+            _is_youtube(url),
+            bool(provider) and provider in who,
+            bool(v.get("live")),
+            -(v.get("priority") if isinstance(v.get("priority"), int) else 99),
+        )
+
+    vids = _links(vids)
+    return max(vids, key=score)["url"] if vids else ""
+
+
+def pick_info(raw: dict, provider: dict, rocket: dict) -> str:
+    """Where the launch is actually described, before a stream exists: the
+    launch's own info links (SpaceX's mission page for a SpaceX launch), then
+    the provider's site, then Space Launch Now's page for this launch."""
+    infos = _links(raw.get("info_urls") or raw.get("infoURLs"))
+    if infos:
+        provider_name = (provider.get("name") or "").lower().split()
+        own = [i for i in infos if provider_name and provider_name[0] in i["url"].lower()]
+        return (own or infos)[0]["url"]
+    mission = raw.get("mission") or {}
+    for item in _links(mission.get("info_urls")):
+        return item["url"]
+    slug = raw.get("slug")
+    if isinstance(slug, str) and slug:
+        return f"https://spacelaunchnow.me/launch/{slug}/"
+    for url in (provider.get("info_url"), provider.get("wiki_url"), rocket.get("wiki_url")):
+        if _http(url):
+            return url
+    return "https://spacelaunchnow.me/launch/"
 
 
 def rocket_facts(conf: dict) -> dict:
@@ -372,6 +427,68 @@ class SpaceService:
         return time.time() - self.launches_at > self.cfg.launch_refresh_minutes * 60
 
 
+# ------------------------------------------------------------- calendar
+
+def _ics_escape(text: str) -> str:
+    return (text or "").replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+
+def _ics_fold(line: str) -> str:
+    """RFC 5545: lines over 75 octets continue on the next line after a space."""
+    raw = line.encode("utf-8")
+    if len(raw) <= 75:
+        return line
+    parts, cur = [], b""
+    for ch in line:
+        b = ch.encode("utf-8")
+        if len(cur) + len(b) > (75 if not parts else 74):
+            parts.append(cur.decode("utf-8"))
+            cur = b""
+        cur += b
+    parts.append(cur.decode("utf-8"))
+    return "\r\n ".join(parts)
+
+
+def launches_ics(launches: list[Launch], globe_url: str = "",
+                 now: datetime | None = None, alarm_minutes: int = 30) -> bytes:
+    """An iCalendar feed. Each launch keeps its UID, so a calendar app that
+    re-fetches the feed moves a slipped launch instead of duplicating it."""
+    now = now or datetime.now(timezone.utc)
+    stamp = now.strftime("%Y%m%dT%H%M%SZ")
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//newsbot//launches//EN",
+             "CALSCALE:GREGORIAN", "METHOD:PUBLISH", "X-WR-CALNAME:Rocket launches",
+             "X-PUBLISHED-TTL:PT1H", "REFRESH-INTERVAL;VALUE=DURATION:PT1H"]
+    for launch in launches:
+        start = launch.net_dt
+        end = start + timedelta(hours=1)
+        where = ", ".join(p for p in (launch.pad, launch.location) if p)
+        desc = "\n".join(p for p in (
+            f"{launch.rocket} - {launch.provider}".strip(" -"),
+            f"Status: {launch.status_name or launch.status}" if launch.status else "",
+            f"Watch: {launch.stream_url}" if launch.stream_url else "",
+            f"Info: {launch.info_url}",
+            f"Globe: {globe_url}/#launch={launch.id}" if globe_url else "",
+            "", launch.mission) if p is not None)
+        tentative = launch.status not in REMIND_STATUSES
+        lines += [
+            "BEGIN:VEVENT",
+            f"UID:{launch.id}@newsbot-launches",
+            f"DTSTAMP:{stamp}",
+            f"DTSTART:{start.strftime('%Y%m%dT%H%M%SZ')}",
+            f"DTEND:{end.strftime('%Y%m%dT%H%M%SZ')}",
+            f"SUMMARY:{_ics_escape(('(TBD) ' if tentative else '') + '🚀 ' + launch.name)}",
+            f"LOCATION:{_ics_escape(where)}",
+            f"DESCRIPTION:{_ics_escape(desc.strip())}",
+            f"URL:{launch.link}",
+            f"STATUS:{'TENTATIVE' if tentative else 'CONFIRMED'}",
+            "BEGIN:VALARM", "ACTION:DISPLAY", f"DESCRIPTION:{_ics_escape(launch.name)}",
+            f"TRIGGER:-PT{int(alarm_minutes)}M", "END:VALARM",
+            "END:VEVENT",
+        ]
+    lines.append("END:VCALENDAR")
+    return ("\r\n".join(_ics_fold(ln) for ln in lines) + "\r\n").encode("utf-8")
+
+
 # ------------------------------------------------------------ Telegram text
 
 def launch_html(launch: Launch, tz_name: str | None, globe_url: str,
@@ -385,7 +502,7 @@ def launch_html(launch: Launch, tz_name: str | None, globe_url: str,
     minutes = (launch.net_dt - now).total_seconds() / 60
     where = ", ".join(p for p in (launch.pad, launch.location) if p)
     links = [f'<a href="{esc(launch.link)}">'
-             f'{"Watch live" if launch.stream_url else "Details"}</a>']
+             f'{"Watch live" if launch.stream_url else "Launch page"}</a>']
     if globe_url:
         links.append(f'<a href="{esc(globe_url)}/#launch={esc(launch.id)}">'
                      f'On the globe</a>')
@@ -400,7 +517,9 @@ def launch_html(launch: Launch, tz_name: str | None, globe_url: str,
 
 
 async def send_launch_reminders(bot, db, space: SpaceService, leads: list[int],
-                                globe_url: str) -> int:
+                                globe_url: str, app=None) -> int:
+    """Telegram and/or app push, per the user's app preferences. The claim
+    is per user and reminder, so neither channel can double-send."""
     users = await db.launch_alert_users()
     if not users or not space.launches:
         return 0
@@ -408,9 +527,18 @@ async def send_launch_reminders(bot, db, space: SpaceService, leads: list[int],
     sent = 0
     for launch, lead in due_reminders(space.launches, now, leads):
         key = alert_key(launch, lead)
+        minutes = (launch.net_dt - now).total_seconds() / 60
         for user_id, tz_name in users:
             if not await db.claim_launch_alert(user_id, key):
                 continue        # already sent this one
+            if app is not None:
+                try:
+                    if await app.launch_push(user_id, launch, lead, when_text(minutes)):
+                        sent += 1
+                    if not await app.launch_telegram(user_id):
+                        continue
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Launch push to %s failed: %s", user_id, describe(exc))
             try:
                 await bot.send_message(
                     user_id, launch_html(launch, tz_name, globe_url, now),

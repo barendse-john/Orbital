@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Orbital</title>
+<meta name="theme-color" content="#050302">
+<link rel="manifest" href="/app/manifest.webmanifest">
+<link rel="icon" href="/app/icon-192.png">
+<link rel="apple-touch-icon" href="/app/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #050302; --bg2: #0d0804; --card: #140c04; --card2: #1b1107; --line: rgba(255,176,40,.22);
+    --text: #fff4e0; --dim: #c9ab7e; --muted: #8d7452; --accent: #ffb628; --hot: #ff5a36;
+    --ok: #b6ff5c; --warn: #ffe066; --mono: "JetBrains Mono", ui-monospace, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --nav: 64px; --safe-b: env(safe-area-inset-bottom, 0px); --safe-t: env(safe-area-inset-top, 0px);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 var(--sans); }
+  body { min-height: 100dvh; padding-bottom: calc(var(--nav) + var(--safe-b)); overscroll-behavior-y: contain; }
+  a { color: var(--accent); text-decoration: none; }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+  .mono { font-family: var(--mono); }
+
+  header { position: sticky; top: 0; z-index: 10; padding: calc(12px + var(--safe-t)) 16px 10px;
+    background: linear-gradient(var(--bg) 70%, transparent); display: flex; align-items: center; gap: 10px; }
+  header h1 { margin: 0; font: 700 17px var(--mono); letter-spacing: 3px; color: var(--accent);
+    text-shadow: 0 0 12px rgba(255,182,40,.45); flex: 1; }
+  .dot-live { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot-live.off { background: var(--hot); box-shadow: 0 0 8px var(--hot); }
+  .iconbtn { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center;
+    border: 1px solid var(--line); background: var(--card); }
+  .iconbtn svg { width: 18px; height: 18px; }
+  .iconbtn.spin svg { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  main { padding: 0 14px 20px; max-width: 640px; margin: 0 auto; }
+  section.tab { display: none; }
+  section.tab.on { display: block; animation: fade .18s ease; }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } }
+  h2 { font: 700 11px var(--mono); letter-spacing: 2px; color: var(--muted); text-transform: uppercase; margin: 22px 4px 8px; }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px; }
+  .hero { position: relative; overflow: hidden; padding: 16px; background:
+    radial-gradient(120% 90% at 100% 0%, rgba(255,160,30,.18), transparent 60%), var(--card); }
+  .hero .label { font: 700 10.5px var(--mono); letter-spacing: 2px; color: var(--accent); }
+  .hero .name { font-size: 19px; font-weight: 650; margin: 6px 0 2px; line-height: 1.25; }
+  .hero .meta { color: var(--dim); font-size: 13px; }
+  .count { font: 700 34px var(--mono); letter-spacing: 1px; margin: 12px 0 4px; color: var(--accent);
+    text-shadow: 0 0 18px rgba(255,182,40,.35); font-variant-numeric: tabular-nums; }
+  .count.hot { color: var(--hot); text-shadow: 0 0 18px rgba(255,90,54,.4); }
+  .count small { font-size: 13px; color: var(--muted); margin-left: 4px; }
+  .row-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 9px 14px; border-radius: 12px;
+    border: 1px solid var(--line); background: var(--card2); color: var(--text); font-size: 14px; font-weight: 550; }
+  .btn.primary { background: var(--accent); color: #1a0e00; border-color: var(--accent); }
+  .btn.hotb { background: var(--hot); color: #fff; border-color: var(--hot); }
+  .btn:disabled { opacity: .5; }
+
+  .chip { display: inline-block; font: 700 10px var(--mono); letter-spacing: 1px; padding: 2px 7px; border-radius: 99px;
+    border: 1px solid var(--line); color: var(--dim); vertical-align: middle; }
+  .chip.Go { color: var(--ok); border-color: rgba(182,255,92,.45); }
+  .chip.TBC { color: var(--warn); border-color: rgba(255,224,102,.45); }
+  .chip.live { color: #fff; background: var(--hot); border-color: var(--hot); }
+
+  .filters { display: flex; gap: 8px; margin: 14px 0 0; overflow-x: auto; scrollbar-width: none; }
+  .filters button { flex: none; padding: 7px 12px; border-radius: 99px; border: 1px solid var(--line); color: var(--dim); font-size: 13px; }
+  .filters button.on { background: rgba(255,182,40,.15); color: var(--accent); border-color: rgba(255,182,40,.6); }
+
+  .day { font: 700 11px var(--mono); letter-spacing: 1.5px; color: var(--muted); margin: 18px 4px 6px; text-transform: uppercase; }
+  .launch { display: grid; grid-template-columns: 52px 1fr auto; gap: 12px; align-items: center; padding: 12px;
+    border-radius: 14px; background: var(--card); border: 1px solid transparent; margin-bottom: 8px; width: 100%; text-align: left; }
+  .launch:active { border-color: var(--line); }
+  .launch .t { font: 700 14px var(--mono); color: var(--accent); text-align: center; }
+  .launch .t small { display: block; font-size: 10px; color: var(--muted); font-weight: 500; }
+  .launch .n { font-weight: 600; font-size: 14.5px; line-height: 1.3; }
+  .launch .p { color: var(--dim); font-size: 12.5px; margin-top: 2px; }
+  .launch .c { font: 500 12px var(--mono); color: var(--dim); text-align: right; font-variant-numeric: tabular-nums; }
+
+  .story { display: block; padding: 13px 14px; background: var(--card); border-radius: 14px; margin-bottom: 8px; color: var(--text); }
+  .story .top { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); }
+  .story .top .chip { color: var(--accent); border-color: rgba(255,182,40,.4); }
+  .story .h { font-weight: 620; font-size: 15.5px; line-height: 1.3; margin: 6px 0 4px; }
+  .story .s { color: var(--dim); font-size: 13.5px; }
+  .story img { width: 100%; max-height: 170px; object-fit: cover; border-radius: 10px; margin: 8px 0 2px; }
+
+  .topics { display: flex; flex-wrap: wrap; gap: 8px; }
+  .topic { display: inline-flex; align-items: center; gap: 4px; padding: 6px 6px 6px 12px; border-radius: 99px;
+    background: var(--card2); border: 1px solid var(--line); font-size: 14px; }
+  .topic button { width: 24px; height: 24px; border-radius: 50%; color: var(--muted); font-size: 16px; line-height: 1; }
+  .add { display: flex; gap: 8px; margin-top: 10px; }
+  input[type=text], input[type=time] { flex: 1; min-width: 0; padding: 11px 13px; border-radius: 12px; border: 1px solid var(--line);
+    background: var(--bg2); color: var(--text); font: inherit; color-scheme: dark; }
+  input:focus { outline: 1px solid var(--accent); }
+  .ask { margin-top: 10px; padding: 12px; border-radius: 12px; background: rgba(255,182,40,.08); border: 1px solid rgba(255,182,40,.3); }
+  .ask p { margin: 0 0 8px; }
+
+  .setting { display: flex; align-items: center; gap: 12px; padding: 13px 14px; border-bottom: 1px solid rgba(255,176,40,.1); }
+  .setting:last-child { border-bottom: 0; }
+  .setting .l { flex: 1; }
+  .setting .l small { display: block; color: var(--muted); font-size: 12.5px; }
+  .group { background: var(--card); border-radius: 16px; overflow: hidden; }
+  .switch { position: relative; width: 46px; height: 28px; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch span { position: absolute; inset: 0; border-radius: 99px; background: #3a2c1a; transition: .2s; }
+  .switch span::after { content: ""; position: absolute; left: 3px; top: 3px; width: 22px; height: 22px; border-radius: 50%;
+    background: #d8c6a8; transition: .2s; }
+  .switch input:checked + span { background: var(--accent); }
+  .switch input:checked + span::after { transform: translateX(18px); background: #1a0e00; }
+  .switch input:disabled + span { opacity: .4; }
+
+  .empty { text-align: center; color: var(--muted); padding: 28px 16px; }
+  .empty b { display: block; color: var(--text); font-size: 16px; margin-bottom: 6px; }
+  .note { font-size: 13px; color: var(--dim); background: rgba(255,90,54,.08); border: 1px solid rgba(255,90,54,.3);
+    padding: 10px 12px; border-radius: 12px; margin-top: 12px; }
+
+  nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; height: calc(var(--nav) + var(--safe-b));
+    padding-bottom: var(--safe-b); display: flex; background: rgba(8,5,2,.94); backdrop-filter: blur(12px);
+    border-top: 1px solid var(--line); }
+  nav button, nav a { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+    color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .3px; }
+  nav svg { width: 22px; height: 22px; }
+  nav .on { color: var(--accent); }
+  nav .on svg { filter: drop-shadow(0 0 6px rgba(255,182,40,.6)); }
+
+  .sheet-bg { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 30; opacity: 0; pointer-events: none; transition: .2s; }
+  .sheet-bg.on { opacity: 1; pointer-events: auto; }
+  .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 31; max-height: 88dvh; overflow-y: auto;
+    background: var(--bg2); border-top: 1px solid var(--line); border-radius: 22px 22px 0 0;
+    padding: 8px 16px calc(24px + var(--safe-b)); transform: translateY(105%); transition: transform .25s ease; max-width: 640px; margin: 0 auto; }
+  .sheet.on { transform: none; }
+  .grab { width: 40px; height: 4px; border-radius: 4px; background: #4a3a24; margin: 4px auto 12px; }
+  .sheet h3 { margin: 4px 0 4px; font-size: 20px; line-height: 1.25; }
+  .sheet img.hero-img { width: 100%; max-height: 210px; object-fit: cover; border-radius: 14px; margin: 10px 0; }
+  dl.specs { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 10px 0; font-size: 14px; }
+  dl.specs dt { color: var(--muted); font: 500 12px var(--mono); padding-top: 2px; }
+  dl.specs dd { margin: 0; }
+  .sheet p.mission { color: var(--dim); font-size: 14px; }
+
+  .toast { position: fixed; left: 50%; bottom: calc(var(--nav) + var(--safe-b) + 14px); transform: translateX(-50%) translateY(20px);
+    background: var(--card2); border: 1px solid var(--line); color: var(--text); padding: 10px 16px; border-radius: 12px;
+    z-index: 40; opacity: 0; transition: .2s; max-width: 90vw; font-size: 14px; }
+  .toast.on { opacity: 1; transform: translateX(-50%); }
+  .skeleton { height: 64px; border-radius: 14px; margin-bottom: 8px; background: linear-gradient(90deg, var(--card) 0%, var(--card2) 50%, var(--card) 100%);
+    background-size: 200% 100%; animation: sk 1.2s infinite; }
+  @keyframes sk { to { background-position: -200% 0; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>ORBITAL</h1>
+  <span class="dot-live" id="live" title="Connection"></span>
+  <button class="iconbtn" id="refresh" aria-label="Refresh">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5"/></svg>
+  </button>
+</header>
+
+<main>
+  <section class="tab" id="tab-launches">
+    <div id="hero"></div>
+    <div class="filters" id="filters">
+      <button data-f="all" class="on">All</button>
+      <button data-f="go">Confirmed</button>
+      <button data-f="today">Next 24 h</button>
+      <button data-f="stream">Has stream</button>
+    </div>
+    <div id="launchList"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>
+  </section>
+
+  <section class="tab" id="tab-news">
+    <div id="newsBody"></div>
+  </section>
+
+  <section class="tab" id="tab-settings">
+    <div id="settingsBody"></div>
+  </section>
+</main>
+
+<nav>
+  <button data-tab="launches"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2c3 3 4.5 6.5 4.5 10.5L14 16h-4l-2.5-3.5C7.5 8.5 9 5 12 2z"/><circle cx="12" cy="9" r="1.6"/><path d="M10 16l-1 5 3-2 3 2-1-5"/></svg>Launches</button>
+  <button data-tab="news"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10M7 12h10M7 16h6"/></svg>News</button>
+  <a href="/" id="globeLink"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c-3 3-3 15 0 18M12 3c3 3 3 15 0 18"/></svg>Globe</a>
+  <button data-tab="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</button>
+</nav>
+
+<div class="sheet-bg" id="sheetBg"></div>
+<div class="sheet" id="sheet"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+// ------------------------------------------------------------------ basics
+const $ = (id) => document.getElementById(id);
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v === true ? "" : v);
+  }
+  for (const k of kids.flat()) if (k != null && k !== false) e.append(k.nodeType ? k : String(k));
+  return e;
+}
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* private mode */ } },
+};
+let toastTimer;
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.classList.add("on");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("on"), 2600);
+}
+
+// Pairing: /app in Telegram sends a link ending in #pair=<token>.
+(function pairFromLink() {
+  const m = location.hash.match(/pair=([\w-]+)/);
+  if (m) {
+    store.set("token", m[1]);
+    history.replaceState(null, "", "/app/#settings");
+    setTimeout(() => toast("Paired with Telegram ✓"), 300);
+  }
+})();
+const token = () => store.get("token", "");
+
+async function api(path, opts = {}) {
+  const headers = { "Content-Type": "application/json" };
+  if (token()) headers.Authorization = "Bearer " + token();
+  const res = await fetch(path, { method: opts.method || "GET", headers,
+    body: opts.body ? JSON.stringify(opts.body) : undefined });
+  let data = {};
+  try { data = await res.json(); } catch (e) { /* empty */ }
+  if (!res.ok) { const err = new Error(data.error || `Error ${res.status}`); err.status = res.status; throw err; }
+  return data;
+}
+function setLive(ok) { $("live").classList.toggle("off", !ok); }
+
+// ------------------------------------------------------------------ time
+const netMs = (l) => Date.parse(l.net);
+function countdown(ms) {
+  const neg = ms < 0; ms = Math.abs(ms);
+  const d = Math.floor(ms / 864e5), h = Math.floor(ms / 36e5) % 24, m = Math.floor(ms / 6e4) % 60, s = Math.floor(ms / 1e3) % 60;
+  const p = (n) => String(n).padStart(2, "0");
+  return (neg ? "T+" : "T-") + (d ? `${d}d ` : "") + `${p(h)}:${p(m)}:${p(s)}`;
+}
+function shortIn(ms) {
+  if (ms < 0) return "now";
+  const m = Math.round(ms / 6e4);
+  if (m < 60) return `${m} min`;
+  if (m < 48 * 60) return `${Math.round(m / 60)} h`;
+  return `${Math.round(m / 1440)} d`;
+}
+const fmtTime = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+function dayLabel(ms) {
+  const d = new Date(ms), today = new Date(); today.setHours(0, 0, 0, 0);
+  const diff = Math.round((new Date(d).setHours(0, 0, 0, 0) - today) / 864e5);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Tomorrow";
+  return d.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" });
+}
+function ago(iso) {
+  const m = (Date.now() - Date.parse(iso)) / 6e4;
+  if (!isFinite(m)) return "";
+  if (m < 60) return `${Math.max(1, Math.round(m))}m ago`;
+  if (m < 2880) return `${Math.round(m / 60)}h ago`;
+  return `${Math.round(m / 1440)}d ago`;
+}
+
+// ---------------------------------------------------------------- launches
+let launches = [];
+let filter = store.get("filter", "all");
+
+function gcal(l) {
+  const t = (ms) => new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  return "https://calendar.google.com/calendar/render?" + new URLSearchParams({ action: "TEMPLATE",
+    text: `🚀 ${l.name}`, dates: `${t(netMs(l))}/${t(netMs(l) + 3600e3)}`,
+    details: `${l.rocket} · ${l.provider}\n${l.stream_url || l.info_url}`,
+    location: [l.pad, l.location].filter(Boolean).join(", ") });
+}
+function watchBtn(l, cls) {
+  return el("a", { class: "btn " + (cls || (l.stream_url ? "hotb" : "")), href: l.stream_url || l.info_url, target: "_blank", rel: "noopener" },
+    l.stream_url ? "▶ Watch" : "Launch page ↗");
+}
+
+async function loadLaunches() {
+  try {
+    const d = await api("/api/launches");
+    launches = (d.launches || []).filter(l => netMs(l) > Date.now() - 2 * 3600e3).sort((a, b) => netMs(a) - netMs(b));
+    setLive(true);
+  } catch (e) { setLive(false); }
+  renderLaunches();
+  const m = location.hash.match(/launch=([^&]+)/);
+  if (m) { const l = launches.find(x => x.id === decodeURIComponent(m[1])); if (l) openLaunch(l); }
+}
+
+function renderLaunches() {
+  const now = Date.now();
+  const next = launches.find(l => netMs(l) > now - 3600e3);
+  const hero = $("hero"); hero.replaceChildren();
+  if (next) {
+    const live = next.stream_url && netMs(next) - now < 3600e3;
+    hero.append(el("div", { class: "card hero", onclick: () => openLaunch(next) },
+      el("div", { class: "label" }, "NEXT LAUNCH ", live ? el("span", { class: "chip live" }, "LIVE SOON") : ""),
+      el("div", { class: "name" }, next.name),
+      el("div", { class: "meta" }, [next.provider, next.location || next.pad].filter(Boolean).join(" · ")),
+      el("div", { class: "count" + (netMs(next) - now < 3600e3 ? " hot" : ""), "data-net": next.net }, countdown(netMs(next) - now)),
+      el("div", { class: "meta" }, `${dayLabel(netMs(next))}, ${fmtTime(netMs(next))} `, next.status ? el("span", { class: "chip " + next.status }, next.status) : ""),
+      el("div", { class: "row-btns", onclick: (e) => e.stopPropagation() }, watchBtn(next, "primary"),
+        el("a", { class: "btn", href: gcal(next), target: "_blank", rel: "noopener" }, "+ Calendar"),
+        el("a", { class: "btn", href: `/#launch=${encodeURIComponent(next.id)}` }, "Globe"))));
+  }
+  document.querySelectorAll("#filters button").forEach(b => b.classList.toggle("on", b.dataset.f === filter));
+  const list = $("launchList"); list.replaceChildren();
+  const shown = launches.filter(l => l !== next).filter(l =>
+    filter === "go" ? ["Go", "TBC"].includes(l.status) :
+    filter === "today" ? netMs(l) - now < 864e5 :
+    filter === "stream" ? !!l.stream_url : true);
+  if (!launches.length) {
+    list.append(el("div", { class: "empty" }, el("b", null, "No launch data yet"), "The Pi refreshes launches every 20 minutes."));
+    return;
+  }
+  if (!shown.length) { list.append(el("div", { class: "empty" }, "Nothing matches this filter.")); return; }
+  let lastDay = "";
+  for (const l of shown) {
+    const day = dayLabel(netMs(l));
+    if (day !== lastDay) { list.append(el("div", { class: "day" }, day)); lastDay = day; }
+    list.append(el("button", { class: "launch", onclick: () => openLaunch(l) },
+      el("div", { class: "t" }, fmtTime(netMs(l)), el("small", null, l.status || "")),
+      el("div", null, el("div", { class: "n" }, l.name), el("div", { class: "p" }, [l.provider, l.location].filter(Boolean).join(" · "))),
+      el("div", { class: "c" }, l.stream_url ? "▶ " : "", shortIn(netMs(l) - now))));
+  }
+}
+
+function openLaunch(l) {
+  const r = l.rocket_info || {};
+  const n = (v) => Number(v).toLocaleString();
+  const specs = el("dl", { class: "specs" });
+  const put = (k, v) => { if (v !== undefined && v !== null && v !== "" && v !== false) specs.append(el("dt", null, k), el("dd", null, String(v))); };
+  put("Liftoff", `${dayLabel(netMs(l))}, ${fmtTime(netMs(l))}`);
+  put("Status", l.status_name || l.status);
+  put("Rocket", l.rocket); put("Provider", l.provider); put("Orbit", l.orbit);
+  put("Pad", [l.pad, l.location].filter(Boolean).join(", "));
+  const rs = el("dl", { class: "specs" });
+  const rput = (k, v) => { if (v) rs.append(el("dt", null, k), el("dd", null, v)); };
+  rput("Height", r.length_m && `${r.length_m} m`); rput("Diameter", r.diameter_m && `${r.diameter_m} m`);
+  rput("Mass", r.launch_mass_t && `${n(r.launch_mass_t)} t`); rput("Thrust", r.thrust_kn && `${n(r.thrust_kn)} kN`);
+  rput("To LEO", r.leo_capacity_kg && `${n(r.leo_capacity_kg)} kg`); rput("To GTO", r.gto_capacity_kg && `${n(r.gto_capacity_kg)} kg`);
+  rput("Reusable", r.reusable === undefined ? "" : (r.reusable ? "Yes" : "No"));
+  rput("Record", r.launches != null ? `${r.successes ?? "?"} / ${r.launches} successful` : "");
+  const share = navigator.share ? el("button", { class: "btn", onclick: () => navigator.share({ title: l.name, url: l.stream_url || l.info_url }).catch(() => {}) }, "Share") : null;
+  openSheet(
+    l.status ? el("span", { class: "chip " + l.status }, l.status_name || l.status) : "",
+    el("h3", null, l.name),
+    el("div", { class: "count" + (netMs(l) - Date.now() < 3600e3 ? " hot" : ""), "data-net": l.net }, countdown(netMs(l) - Date.now())),
+    el("div", { class: "row-btns" }, watchBtn(l, "primary"),
+      l.stream_url ? el("a", { class: "btn", href: l.info_url, target: "_blank", rel: "noopener" }, "Launch page ↗") : null,
+      el("a", { class: "btn", href: gcal(l), target: "_blank", rel: "noopener" }, "+ Google Calendar"),
+      el("a", { class: "btn", href: `/calendar/${encodeURIComponent(l.id)}.ics` }, "+ .ics"),
+      el("a", { class: "btn", href: `/#launch=${encodeURIComponent(l.id)}` }, "Globe"), share),
+    l.image ? el("img", { class: "hero-img", src: l.image, alt: "", onerror: (e) => e.target.remove() }) : "",
+    specs,
+    l.mission ? el("p", { class: "mission" }, l.mission) : "",
+    rs.children.length ? [el("h2", null, "Rocket · " + (l.rocket || "")), rs, r.description ? el("p", { class: "mission" }, r.description) : "",
+      r.wiki_url ? el("a", { href: r.wiki_url, target: "_blank", rel: "noopener" }, "Rocket on Wikipedia ↗") : ""] : "");
+  history.replaceState(null, "", "#launch=" + encodeURIComponent(l.id));
+}
+
+function openSheet(...kids) {
+  const s = $("sheet"); s.replaceChildren(el("div", { class: "grab" }), ...kids.flat());
+  s.scrollTop = 0; s.classList.add("on"); $("sheetBg").classList.add("on");
+}
+function closeSheet() {
+  $("sheet").classList.remove("on"); $("sheetBg").classList.remove("on");
+  if (location.hash.includes("launch=")) history.replaceState(null, "", "#launches");
+}
+$("sheetBg").onclick = closeSheet;
+// Swipe the sheet down to close it.
+(() => {
+  let y0 = null;
+  $("sheet").addEventListener("touchstart", (e) => { y0 = $("sheet").scrollTop <= 0 ? e.touches[0].clientY : null; }, { passive: true });
+  $("sheet").addEventListener("touchend", (e) => { if (y0 != null && e.changedTouches[0].clientY - y0 > 90) closeSheet(); y0 = null; });
+})();
+document.querySelectorAll("#filters button").forEach(b => b.onclick = () => { filter = b.dataset.f; store.set("filter", filter); renderLaunches(); });
+
+// -------------------------------------------------------------------- news
+let me = null, pending = null;     // pending topic interview: {label, transcript, question}
+
+function pairCard() {
+  return el("div", { class: "card empty" }, el("b", null, "Pair with Telegram"),
+    "Send ", el("span", { class: "mono" }, "/app"), " to the bot and open the link it replies with on this phone. ",
+    "That signs the app in to your topics, briefing and notifications.");
+}
+
+async function loadMe() {
+  if (!token()) { me = null; return; }
+  try { me = await api("/api/me"); setLive(true); }
+  catch (e) { if (e.status === 401) { store.set("token", ""); toast("Signed out - pair again with /app"); } me = null; }
+}
+
+async function renderNews() {
+  const body = $("newsBody"); body.replaceChildren();
+  if (!token()) { body.append(pairCard()); return; }
+  body.append(el("div", { class: "skeleton" }), el("div", { class: "skeleton" }));
+  let briefings = [];
+  try { briefings = (await api("/api/me/briefing")).briefings || []; } catch (e) { /* offline */ }
+  body.replaceChildren();
+  const latest = briefings[0];
+  body.append(el("h2", null, latest ? `Briefing · ${dayLabel(Date.parse(latest.created_at))}, ${fmtTime(Date.parse(latest.created_at))}` : "Briefing"));
+  if (!latest) {
+    body.append(el("div", { class: "card empty" }, el("b", null, "No briefing yet"),
+      me && me.digest_time ? `Your next one arrives at ${me.digest_time}. Or pull one now with ↻.` : "Tap ↻ to fetch one now."));
+  } else {
+    for (const it of latest.items) body.append(storyCard(it));
+  }
+  if (briefings.length > 1) {
+    const older = el("details", null, el("summary", { class: "day" }, "Earlier briefings"));
+    for (const b of briefings.slice(1)) {
+      older.append(el("div", { class: "day" }, `${dayLabel(Date.parse(b.created_at))} ${fmtTime(Date.parse(b.created_at))}`));
+      for (const it of b.items) older.append(storyCard(it));
+    }
+    body.append(older);
+  }
+  body.append(el("h2", null, "Topics you follow"), topicsCard());
+}
+
+function storyCard(it) {
+  return el("a", { class: "story", href: it.url, target: "_blank", rel: "noopener" },
+    el("div", { class: "top" }, el("span", { class: "chip" }, it.topic), [it.source, it.published ? ago(it.published) : ""].filter(Boolean).join(" · ")),
+    it.image ? el("img", { src: it.image, alt: "", loading: "lazy", onerror: (e) => e.target.remove() }) : "",
+    el("div", { class: "h" }, it.title),
+    it.summary ? el("div", { class: "s" }, it.summary) : "");
+}
+
+function topicsCard() {
+  const box = el("div", { class: "card" });
+  const list = el("div", { class: "topics" });
+  for (const t of (me && me.topics) || []) {
+    list.append(el("span", { class: "topic" }, t, el("button", { "aria-label": "Remove " + t, onclick: async () => {
+      if (!confirm(`Stop following ${t}?`)) return;
+      try { const r = await api("/api/me/topics", { method: "DELETE", body: { label: t } }); me.topics = r.topics; renderNews(); }
+      catch (e) { toast(e.message); }
+    } }, "×")));
+  }
+  if (!list.children.length) list.append(el("span", { class: "p", style: "color:var(--muted)" }, "Nothing yet - add what you care about."));
+  box.append(list);
+  if (pending && pending.question) {
+    const input = el("input", { type: "text", placeholder: "Your answer", enterkeyhint: "send" });
+    const send = async () => { if (!input.value.trim()) return;
+      pending.transcript.push({ q: pending.question, a: input.value.trim() }); await submitTopic(pending.label); };
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+    box.append(el("div", { class: "ask" }, el("p", null, el("b", null, pending.label + ": "), pending.question),
+      el("div", { class: "add" }, input, el("button", { class: "btn primary", onclick: send }, "→")),
+      el("button", { class: "btn", style: "margin-top:8px", onclick: () => { pending = null; renderNews(); } }, "Cancel")));
+    setTimeout(() => input.focus(), 50);
+  } else {
+    const input = el("input", { type: "text", placeholder: "Follow a topic, e.g. Rocket Lab", enterkeyhint: "done" });
+    const go = () => { const v = input.value.trim(); if (v) { pending = { label: v, transcript: [] }; submitTopic(v); } };
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+    box.append(el("div", { class: "add" }, input, el("button", { class: "btn primary", onclick: go }, "Add")));
+  }
+  return box;
+}
+
+async function submitTopic(label) {
+  toast("Working out what to search for…");
+  try {
+    const r = await api("/api/me/topics", { method: "POST", body: { label, transcript: pending.transcript } });
+    if (r.question) { pending.question = r.question; }
+    else { pending = null; me.topics = r.topics; toast(`Following ${r.added}`); }
+  } catch (e) { toast(e.message); pending = null; }
+  renderNews();
+}
+
+async function refreshBriefing() {
+  if (!token()) return toast("Pair with Telegram first");
+  toast("Fetching your news…");
+  try { const r = await api("/api/me/briefing/refresh", { method: "POST", body: {} });
+    toast(r.new ? `${r.new} new stories` : "Nothing new since the last briefing"); }
+  catch (e) { toast(e.message); }
+  renderNews();
+}
+
+// ---------------------------------------------------------------- settings
+let config = { push: false, vapid: "" };
+
+function toggle(checked, onchange, disabled) {
+  const input = el("input", { type: "checkbox", disabled });
+  input.checked = !!checked;
+  input.addEventListener("change", () => onchange(input.checked, input));
+  return el("label", { class: "switch" }, input, el("span"));
+}
+function setting(label, hint, control) {
+  return el("div", { class: "setting" }, el("div", { class: "l" }, label, hint ? el("small", null, hint) : ""), control);
+}
+async function save(changes, input) {
+  try { me = await api("/api/me/settings", { method: "POST", body: changes }); toast("Saved"); }
+  catch (e) { toast(e.message); if (input && input.type === "checkbox") input.checked = !input.checked; }
+}
+
+async function pushState() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return "unsupported";
+  const reg = await navigator.serviceWorker.getRegistration("/app/");
+  const sub = reg && await reg.pushManager.getSubscription();
+  if (sub) return "on";
+  return Notification.permission === "denied" ? "blocked" : "off";
+}
+function b64ToBytes(b64) {
+  const pad = "=".repeat((4 - b64.length % 4) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(raw, c => c.charCodeAt(0));
+}
+async function enablePush() {
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") return toast("Notifications blocked - allow them in Android settings");
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(config.vapid) });
+    await api("/api/me/push", { method: "POST", body: { subscription: sub.toJSON() } });
+    toast("Notifications on");
+  } catch (e) { toast("Couldn't enable: " + e.message); }
+  renderSettings();
+}
+async function disablePush() {
+  const reg = await navigator.serviceWorker.getRegistration("/app/");
+  const sub = reg && await reg.pushManager.getSubscription();
+  if (sub) { await api("/api/me/push", { method: "DELETE", body: { endpoint: sub.endpoint } }).catch(() => {}); await sub.unsubscribe(); }
+  toast("Notifications off on this phone"); renderSettings();
+}
+
+async function renderSettings() {
+  const body = $("settingsBody"); body.replaceChildren();
+  if (!isSecureContext) body.append(el("div", { class: "note" },
+    "You're on plain http, so Android can't install the app or show notifications. Open it through your Tailscale https address instead."));
+  if (!token() || !me) { body.append(el("h2", null, "Account"), pairCard()); return; }
+
+  const ps = await pushState();
+  const pushCtl = ps === "on" ? el("button", { class: "btn", onclick: disablePush }, "Turn off")
+    : el("button", { class: "btn primary", disabled: !(config.push && isSecureContext) || ps === "blocked" || ps === "unsupported", onclick: enablePush }, "Enable");
+  body.append(el("h2", null, "Notifications"), el("div", { class: "group" },
+    setting("This phone", ps === "on" ? "Receiving notifications"
+      : !config.push ? "Not available: pywebpush isn't installed on the Pi"
+      : ps === "unsupported" ? "Needs https (Tailscale)"
+      : ps === "blocked" ? "Blocked - allow notifications for this app in Android settings" : "Off", pushCtl),
+    ps === "on" ? setting("Send a test", null, el("button", { class: "btn", onclick: async () => {
+      try { const r = await api("/api/me/push/test", { method: "POST", body: {} }); toast(r.sent ? "Sent" : "No device received it"); } catch (e) { toast(e.message); } } }, "Test")) : ""));
+
+  const p = me.prefs;
+  body.append(el("h2", null, "Launch reminders"), el("div", { class: "group" },
+    setting("Remind me", "A day before and 30 min before confirmed launches", toggle(me.launch_alerts, (v, i) => save({ launch_alerts: v }, i))),
+    setting("In the app", null, toggle(p.launch_push, (v, i) => save({ launch_push: v }, i), !me.launch_alerts)),
+    setting("On Telegram", null, toggle(p.launch_telegram, (v, i) => save({ launch_telegram: v }, i), !me.launch_alerts))));
+
+  const time = el("input", { type: "time", value: me.digest_time || "08:00", style: "flex:none;width:150px" });
+  time.addEventListener("change", () => save({ digest_time: time.value }));
+  body.append(el("h2", null, "Daily briefing"), el("div", { class: "group" },
+    setting("Daily briefing", me.timezone ? `In your timezone (${me.timezone})` : "Set your timezone in Telegram first",
+      toggle(me.digest_enabled, (v, i) => save({ digest_enabled: v }, i))),
+    setting("Time", null, time),
+    setting("Notify me in the app", null, toggle(p.digest_push, (v, i) => save({ digest_push: v }, i))),
+    setting("Also send to Telegram", "Turn off to move your news to the app only", toggle(p.digest_telegram, (v, i) => save({ digest_telegram: v }, i)))));
+
+  const feed = `${location.origin}/calendar.ics`;
+  body.append(el("h2", null, "Calendar"), el("div", { class: "group" },
+    setting("All launches as a calendar", "Subscribe once; it keeps itself up to date. Google Calendar needs a public link - see the README.",
+      el("button", { class: "btn", onclick: async () => { try { await navigator.clipboard.writeText(feed); toast("Feed link copied"); } catch (e) { prompt("Feed link", feed); } } }, "Copy link")),
+    setting("Single launches", "Each launch has + Google Calendar and + .ics buttons", "")));
+
+  body.append(el("h2", null, "Account"), el("div", { class: "group" },
+    setting(`Signed in as ${me.name || "you"}`, config.bot ? `via @${config.bot}` : null,
+      el("button", { class: "btn", onclick: () => { if (confirm("Sign this phone out?")) { store.set("token", ""); me = null; renderSettings(); renderNews(); } } }, "Sign out"))));
+}
+
+// -------------------------------------------------------------------- tabs
+const TABS = ["launches", "news", "settings"];
+function show(tab) {
+  if (!TABS.includes(tab)) tab = "launches";
+  document.querySelectorAll("section.tab").forEach(s => s.classList.toggle("on", s.id === "tab-" + tab));
+  document.querySelectorAll("nav [data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
+  store.set("tab", tab);
+  if (tab === "news") renderNews();
+  if (tab === "settings") renderSettings();
+  window.scrollTo(0, 0);
+}
+document.querySelectorAll("nav [data-tab]").forEach(b => b.onclick = () => { history.replaceState(null, "", "#" + b.dataset.tab); show(b.dataset.tab); });
+$("refresh").onclick = async () => {
+  const b = $("refresh"); b.classList.add("spin");
+  const tab = store.get("tab", "launches");
+  if (tab === "news") await refreshBriefing(); else { await loadLaunches(); await loadMe(); if (tab === "settings") renderSettings(); }
+  b.classList.remove("spin");
+};
+setInterval(() => {
+  const now = Date.now();
+  document.querySelectorAll("[data-net]").forEach(e => e.textContent = countdown(Date.parse(e.dataset.net) - now));
+}, 1000);
+setInterval(loadLaunches, 5 * 60e3);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) loadLaunches(); });
+
+// -------------------------------------------------------------------- boot
+(async function boot() {
+  if ("serviceWorker" in navigator && isSecureContext) navigator.serviceWorker.register("/app/sw.js", { scope: "/app/" }).catch(() => {});
+  const h = location.hash.replace("#", "");
+  show(h.startsWith("launch=") ? "launches" : (TABS.includes(h) ? h : store.get("tab", "launches")));
+  try { config = await api("/api/app/config"); } catch (e) { /* offline */ }
+  await Promise.all([loadLaunches(), loadMe()]);
+  const tab = store.get("tab", "launches");
+  if (tab === "news") renderNews();
+  if (tab === "settings") renderSettings();
+})();
+</script>
+</body>
+</html>

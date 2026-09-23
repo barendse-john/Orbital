@@ -88,8 +88,9 @@ class BotHandlers:
     def __init__(
         self, cfg, db: Database, ai, fetcher: NewsFetcher,
         digest: DigestService, scheduler: DigestScheduler,
-        space=None, globe_url: str = "",
+        space=None, globe_url: str = "", appsvc=None,
     ):
+        self.appsvc = appsvc
         self.space = space
         self.globe_url = globe_url
         self.cfg = cfg
@@ -122,6 +123,7 @@ class BotHandlers:
         app.add_handler(CommandHandler("users", self.cmd_users))
         app.add_handler(CommandHandler("launches", self.cmd_launches))
         app.add_handler(CommandHandler("launchalerts", self.cmd_launchalerts))
+        app.add_handler(CommandHandler("app", self.cmd_app))
         app.add_handler(
             CallbackQueryHandler(self.on_access_decision, pattern=r"^access:")
         )
@@ -944,6 +946,32 @@ class BotHandlers:
         await update.effective_message.reply_text(
             body + footer, parse_mode=ParseMode.HTML,
             disable_web_page_preview=True)
+
+    async def cmd_app(self, update: Update, context) -> None:
+        if not await self._allowed(update, context):
+            return
+        msg = update.effective_message
+        if self.appsvc is None:
+            await msg.reply_text("The app is switched off (space.enabled in config.yaml).")
+            return
+        user_id = update.effective_user.id
+        arg = (context.args[0].lower() if context and context.args else "")
+        if arg in ("unpair", "logout", "revoke"):
+            n = await self.db.revoke_app_tokens(user_id)
+            await msg.reply_text(f"Signed out {n} app session(s). /app pairs again.")
+            return
+        token = await self.appsvc.pair(user_id)
+        link = self.appsvc.pair_link(token)
+        https = link.startswith("https://")
+        await msg.reply_text(
+            f'<a href="{esc(link)}">Open the app</a> on your phone - the link '
+            "signs you in, so don't share it.\n\n"
+            "In Chrome: ⋮ → <b>Install app</b> (or Add to home screen), then "
+            "turn on notifications in its Settings tab."
+            + ("" if https else
+               "\n\n⚠️ This link is plain http, so installing and notifications "
+               "won't work. Set space.public_url to your Tailscale https address."),
+            parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
     async def cmd_launchalerts(self, update: Update, context) -> None:
         if not await self._allowed(update, context):

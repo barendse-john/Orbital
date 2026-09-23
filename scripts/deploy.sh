@@ -24,7 +24,10 @@ if ! git pull --ff-only --quiet; then
 fi
 
 if [ -f requirements.txt ] && [ -x .venv/bin/pip ]; then
-    ./.venv/bin/pip install --quiet -r requirements.txt
+    # A dependency that won't install must not stop the restart: the code
+    # treats optional packages (like pywebpush) as optional.
+    ./.venv/bin/pip install --quiet -r requirements.txt \
+        || log "WARNING: pip install failed - restarting with what is installed"
 fi
 
 log "Restarting newsbot.service"

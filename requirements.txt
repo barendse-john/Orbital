@@ -8,3 +8,6 @@ python-dotenv>=1.0.1
 # Offline lat/lon -> IANA timezone (optional: without it, the bot asks for a
 # city name instead of accepting Telegram's "share location" button).
 timezonefinder>=6.5.0
+
+# Phone app notifications (optional: without it the app works, silently)
+pywebpush>=2.0.0

@@ -21,7 +21,9 @@ from .handlers import BotHandlers
 from .news import NewsFetcher
 from .scheduler import DigestScheduler
 from .space import SpaceService, send_launch_reminders
-from .webapp import NewsProxy, start_web
+from .appservice import AppService
+from .push import Pusher
+from .webapp import Ctx, NewsProxy, start_web
 
 log = logging.getLogger("newsbot")
 
@@ -68,6 +70,7 @@ COMMANDS = [
     BotCommand("resume", "Unmute the daily digest"),
     BotCommand("launches", "Upcoming rocket launches"),
     BotCommand("launchalerts", "Launch reminders on/off"),
+    BotCommand("app", "Open the phone app"),
     BotCommand("status", "Your settings"),
     BotCommand("users", "Who can use the bot (admins)"),
     BotCommand("requests", "Who has asked to join (admins)"),
@@ -96,12 +99,18 @@ def build_application(cfg: Config) -> Application:
     space = (SpaceService(cfg.space, cfg.database_path.parent / "space_cache.json")
              if cfg.space.enabled else None)
     globe_url = globe_url_for(cfg) if space else ""
+    appsvc = None
+    if space is not None:
+        appsvc = AppService(db, ai, digest, Pusher(cfg.database_path.parent), globe_url)
+        digest.app = appsvc
     web = {}
 
     async def post_init(app: Application) -> None:
         scheduler = DigestScheduler(app, db, digest)
         handlers = BotHandlers(cfg, db, ai, fetcher, digest, scheduler,
-                               space=space, globe_url=globe_url)
+                               space=space, globe_url=globe_url, appsvc=appsvc)
+        if appsvc is not None:
+            appsvc.scheduler = scheduler
         handlers.register(app)
         app.bot_data.update(
             {"db": db, "ai": ai, "fetcher": fetcher, "digest": digest,
@@ -109,16 +118,18 @@ def build_application(cfg: Config) -> Application:
         )
         await scheduler.reschedule_all()
         scheduler.schedule_maintenance()
+        me = await app.bot.get_me()
         if space is not None:
-            schedule_space(app, db, space, cfg, globe_url)
-            news = NewsProxy(asyncio.get_running_loop(), fetcher.rss)
+            schedule_space(app, db, space, cfg, globe_url, appsvc)
+            loop = asyncio.get_running_loop()
+            news = NewsProxy(loop, fetcher.rss)
+            ctx = Ctx(space, news, appsvc, loop, globe_url, me.username or "")
             web["server"] = start_web(space, cfg.space.web_host,
-                                      cfg.space.web_port, news)
+                                      cfg.space.web_port, news, ctx)
         try:
             await app.bot.set_my_commands(COMMANDS)
         except Exception as exc:  # noqa: BLE001
             log.warning("Could not register the command menu: %s", exc)
-        me = await app.bot.get_me()
         log.info("Running as @%s", me.username)
 
     async def post_shutdown(_app: Application) -> None:
@@ -158,7 +169,7 @@ def globe_url_for(cfg: Config) -> str:
 
 
 def schedule_space(app: Application, db: Database, space: SpaceService,
-                   cfg: Config, globe_url: str) -> None:
+                   cfg: Config, globe_url: str, appsvc=None) -> None:
     """Launch refresh, TLE refresh and the reminder check, all on PTB's job
     queue. Each callback swallows its own errors: a failed fetch must never
     unschedule the job."""
@@ -173,7 +184,8 @@ def schedule_space(app: Application, db: Database, space: SpaceService,
     async def reminders_job(ctx) -> None:
         try:
             sent = await send_launch_reminders(
-                ctx.bot, db, space, cfg.space.remind_before_minutes, globe_url)
+                ctx.bot, db, space, cfg.space.remind_before_minutes, globe_url,
+                app=appsvc)
             if sent:
                 log.info("Sent %d launch reminder(s)", sent)
         except Exception:  # noqa: BLE001

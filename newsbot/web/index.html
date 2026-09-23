@@ -64,7 +64,7 @@
   .chip { display: inline-flex; align-items: center; gap: 6px; user-select: none; }
   .chip.off { opacity: .4; }
   .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; box-shadow: 0 0 8px currentColor; }
-  #clock { padding: 8px 12px; font-variant-numeric: tabular-nums; margin-left: auto; color: var(--accent); }
+  #clock { font-variant-numeric: tabular-nums; color: var(--accent); }
 
   #side { position: fixed; top: 84px; right: 12px; bottom: 44px; width: 340px; display: flex;
     flex-direction: column; z-index: 4; }
@@ -87,6 +87,17 @@
     padding: 14px; z-index: 4; display: none; }
   #card.show { display: block; }
   #card h3 { margin: 0 34px 4px 0; font-size: 14px; color: #fff; letter-spacing: .5px; }
+  #card[data-kind="sat"] h3::before { content: "[ SATELLITE ] "; }
+  #card[data-kind="launch"] h3::before { content: "[ LAUNCH ] "; }
+  #card[data-kind="area"] h3::before { content: "[ AREA ] "; }
+  .sub { margin: 12px 0 4px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--accent);
+    font-size: 10.5px; letter-spacing: 1.5px; text-transform: uppercase; }
+  .muted { color: var(--muted); font-size: 11px; padding: 4px 0; }
+  .news .item { display: block; padding: 6px 0 6px 8px; border-left: 2px solid var(--line); margin: 4px 0;
+    text-decoration: none; color: var(--text); }
+  .news .item:hover { border-left-color: var(--accent); background: rgba(255,176,40,.06); }
+  .news .tt { display: block; font-size: 12px; }
+  .news .src { display: block; color: var(--muted); font-size: 10.5px; margin-top: 2px; }
   #card h3::before { content: "[ TARGET ] "; color: var(--hot); font-size: 10px; letter-spacing: 1.5px; display: block; }
   #card .x { position: absolute; top: 10px; right: 10px; padding: 2px 8px; }
   #card img { width: 100%; margin: 8px 0; max-height: 160px; object-fit: cover;
@@ -124,7 +135,7 @@
   #hud b { color: var(--accent); font-weight: 600; }
   #msg { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 16px 20px;
     display: none; z-index: 9; max-width: 90vw; text-align: center; }
-  #about { position: fixed; right: 12px; bottom: 12px; font-size: 9.5px; color: var(--muted); z-index: 2; opacity: .7; }
+  #about { position: fixed; right: 12px; top: 64px; font-size: 9.5px; color: var(--muted); z-index: 2; opacity: .7; }
 
   @media (max-width: 720px) {
     #side { top: auto; left: 8px; right: 8px; width: auto; height: 38vh; bottom: 40px; }
@@ -147,10 +158,17 @@
     <button data-speed="60">60×</button>
     <button data-speed="600">600×</button>
     <button id="now">Now</button>
-    <button id="toggleList" class="on">Launches</button>
+    <button id="toggleList" class="on">List</button>
+  </div>
+  <div class="glass chips" id="layerBar">
+    <button data-layer="sats">Sats</button>
+    <button data-layer="launches">Launches</button>
+    <button data-layer="grid">Grid</button>
+    <button data-layer="rings">Rings</button>
+    <button data-layer="borders">Borders</button>
+    <button data-layer="xray">X-ray</button>
     <button id="viewMode">Real view</button>
   </div>
-  <div class="glass" id="clock">--</div>
 </div>
 
 <div id="side" class="glass">
@@ -160,7 +178,7 @@
 
 <div id="card" class="glass"></div>
 <div id="msg" class="glass"></div>
-<div id="hud" class="glass"><span id="coords">LAT --.----  LON ---.----</span><span class="hud-extra" id="stats">OBJ 0 · LAUNCH 0</span></div>
+<div id="hud" class="glass"><span id="clock">--</span><span id="coords">LAT --.----  LON ---.----</span><span class="hud-extra">WHEEL zoom · MMB pan · RMB rotate/tilt · LMB inspect</span><span class="hud-extra" id="stats">OBJ 0 · LAUNCH 0</span></div>
 <div id="about">Natural Earth · Esri · CelesTrak · The Space Devs</div>
 
 <script>
@@ -176,6 +194,8 @@ const GROUP_NAMES = { stations: "Space stations", visual: "Brightest", gnss: "GN
   weather: "Weather", starlink: "Starlink", science: "Science", geo: "GEO", active: "All active" };
 
 const $ = (id) => document.getElementById(id);
+const layers = { sats: true, launches: true, grid: true, rings: true, borders: true, xray: false };
+try { Object.assign(layers, JSON.parse(localStorage.getItem("globeLayers") || "{}")); } catch (e) { /* ignore */ }
 function el(tag, cls, text) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -215,7 +235,9 @@ const scene = viewer.scene;
 scene.fog.enabled = true;
 const holo = scene.primitives.add(new Cesium.PrimitiveCollection());
 const coastLines = holo.add(new Cesium.PolylineCollection());
-const detailLines = holo.add(new Cesium.PolylineCollection());
+const gridLines = holo.add(new Cesium.PolylineCollection());
+const borderLines = holo.add(new Cesium.PolylineCollection());
+const ringLines = holo.add(new Cesium.PolylineCollection());
 const glow = (c, p) => Cesium.Material.fromType("PolylineGlow", { color: c, glowPower: p });
 const flat = (c) => Cesium.Material.fromType("Color", { color: c });
 
@@ -229,11 +251,11 @@ function buildGraticule() {
   const m = flat(GOLD.withAlpha(0.16));
   for (let lat = -60; lat <= 60; lat += 30) {
     const pts = []; for (let lon = -180; lon <= 180; lon += 3) pts.push([lon, lat]);
-    addLine(detailLines, pts, 1, m, 6000);
+    addLine(gridLines, pts, 1, m, 6000);
   }
   for (let lon = -180; lon < 180; lon += 30) {
     const pts = []; for (let lat = -88; lat <= 88; lat += 2) pts.push([lon, lat]);
-    addLine(detailLines, pts, 1, m, 6000);
+    addLine(gridLines, pts, 1, m, 6000);
   }
   // Rings floating around the globe, like a projector's calibration arcs.
   const R = 6378137 * 1.22;
@@ -246,7 +268,7 @@ function buildGraticule() {
       const x3 = x * Math.cos(spin) - y2 * Math.sin(spin), y3 = x * Math.sin(spin) + y2 * Math.cos(spin);
       pts.push(new Cesium.Cartesian3(x3, y3, z2));
     }
-    holo.add(new Cesium.PolylineCollection()).add({ positions: pts, width: i ? 1.5 : 3,
+    ringLines.add({ positions: pts, width: i ? 1.5 : 3,
       material: Cesium.Material.fromType("PolylineDash",
         { color: GOLD.withAlpha(i ? 0.35 : 0.55), dashLength: i ? 12 : 28 }) });
   });
@@ -263,7 +285,8 @@ async function buildContinents() {
     const coastMat = glow(GOLD.withAlpha(0.9), 0.2);
     for (const line of coast.coordinates) addLine(coastLines, line, 2.5, coastMat, 3000);
     const borderMat = flat(GOLD.withAlpha(0.4));
-    for (const line of borders.coordinates) addLine(detailLines, line, 1, borderMat, 3000);
+    for (const line of borders.coordinates) addLine(borderLines, line, 1, borderMat, 3000);
+    countryFeatures = topojson.feature(countries, countries.objects.countries).features;
   } catch (e) { console.warn("continent outlines", e); }
 }
 buildGraticule();
@@ -281,8 +304,8 @@ function applyMode(mode) {
   const g = scene.globe;
   g.baseColor = on ? Cesium.Color.fromCssColorString("#1c0e02") : Cesium.Color.BLUE;
   g.translucency.enabled = on;
-  g.translucency.frontFaceAlpha = 0.72;
-  g.translucency.backFaceAlpha = 0.25;
+  g.translucency.frontFaceAlpha = layers.xray ? 0.72 : 0.94;
+  g.translucency.backFaceAlpha = layers.xray ? 0.25 : 0.0;
   g.enableLighting = !on;                       // real day/night terminator
   g.showGroundAtmosphere = !on;
   scene.skyAtmosphere.show = !on;
@@ -409,6 +432,7 @@ function selectSat(sat) {
 }
 function clearSelection() {
   selectedSat = null; selectedLaunch = null;
+  if (areaMarker) { viewer.entities.remove(areaMarker); areaMarker = null; }
   if (orbitEntity) orbitEntity.show = false;
   unfollow();
   $("card").classList.remove("show");
@@ -431,37 +455,142 @@ function unfollow() {
   if (followEntity) { viewer.entities.remove(followEntity); followEntity = null; }
 }
 
+function satQuery(name) {
+  const n = name.toUpperCase();
+  if (n.startsWith("ISS")) return "International Space Station";
+  if (n.includes("TIANHE") || n.startsWith("CSS")) return "Tiangong space station";
+  if (n.startsWith("HST")) return "Hubble Space Telescope";
+  if (n.startsWith("STARLINK")) return "Starlink satellites";
+  if (n.startsWith("GPS") || n.includes("NAVSTAR")) return "GPS satellites";
+  if (n.includes("GALILEO")) return "Galileo satellite navigation";
+  if (n.startsWith("BEIDOU")) return "BeiDou satellites";
+  if (n.includes("GLONASS") || /^COSMOS 2[45]\d\d/.test(n)) return "GLONASS satellites";
+  const q = name.replace(/\(.*?\)/g, "").replace(/\s+(DEB|R\/B|AKM|PKM)\b.*$/i, "").trim();
+  return q ? `${q} satellite` : name;
+}
+
+// Built once per selection; only the moving numbers are refreshed each
+// second, so the news list underneath isn't wiped.
 function renderSatCard() {
   const s = selectedSat; if (!s) return;
-  const date = clockDate();
-  const p = satEcf(s, date);
   const card = $("card");
-  card.replaceChildren();
+  card.replaceChildren(); card.dataset.kind = "sat";
   const x = el("button", "x", "✕"); x.onclick = clearSelection;
   card.append(x, el("h3", null, s.name));
   const dl = el("dl");
-  const add = (k, v) => dl.append(el("dt", null, k), el("dd", null, v));
+  const add = (k, v, id) => { const dd = el("dd", null, v); if (id) dd.id = id; dl.append(el("dt", null, k), dd); };
   add("Group", GROUP_NAMES[s.group] || s.group);
   add("NORAD ID", s.satrec.satnum);
-  if (p) {
-    const geo = satellite.eciToGeodetic(p.eci, p.gmst);
-    const v = Math.hypot(p.vel.x, p.vel.y, p.vel.z);
-    add("Altitude", `${geo.height.toFixed(0)} km`);
-    add("Speed", `${v.toFixed(2)} km/s`);
-    add("Over", `${satellite.degreesLat(geo.latitude).toFixed(2)}°, ${satellite.degreesLong(geo.longitude).toFixed(2)}°`);
-  }
+  add("Altitude", "--", "satAlt");
+  add("Speed", "--", "satSpd");
+  add("Over", "--", "satOver");
   add("Inclination", `${(s.satrec.inclo * 180 / Math.PI).toFixed(2)}°`);
   add("Period", `${((2 * Math.PI) / s.satrec.no).toFixed(1)} min`);
   add("Eccentricity", s.satrec.ecco.toFixed(5));
   card.append(dl);
   const links = el("div", "links");
   const f = el("button", null, followEntity ? "Stop following" : "Follow");
-  f.onclick = () => { followEntity ? unfollow() : follow(s); renderSatCard(); };
+  f.onclick = () => { followEntity ? unfollow() : follow(s); f.textContent = followEntity ? "Stop following" : "Follow"; };
   const n2yo = el("a", null, "Tracking page");
   n2yo.href = `https://www.n2yo.com/satellite/?s=${encodeURIComponent(s.satrec.satnum)}`;
   n2yo.target = "_blank"; n2yo.rel = "noopener";
   links.append(f, n2yo);
   card.append(links);
+  loadNews(card, satQuery(s.name));
+  card.classList.add("show");
+  updateSatCard();
+}
+function updateSatCard() {
+  const s = selectedSat; if (!s || !$("satAlt")) return;
+  const p = satEcf(s, clockDate()); if (!p) return;
+  const geo = satellite.eciToGeodetic(p.eci, p.gmst);
+  $("satAlt").textContent = `${geo.height.toFixed(0)} km`;
+  $("satSpd").textContent = `${Math.hypot(p.vel.x, p.vel.y, p.vel.z).toFixed(2)} km/s`;
+  $("satOver").textContent = `${satellite.degreesLat(geo.latitude).toFixed(2)}°, ${satellite.degreesLong(geo.longitude).toFixed(2)}°`;
+}
+
+// ------------------------------------------------------------------- news
+// Headlines come from the Pi (/api/news), which asks Google News RSS and
+// caches the answer - never the GNews allowance the morning digest uses.
+function ago(iso) {
+  const m = (Date.now() - Date.parse(iso)) / 60000;
+  if (!isFinite(m)) return "";
+  if (m < 60) return `${Math.max(1, Math.round(m))}m ago`;
+  if (m < 48 * 60) return `${Math.round(m / 60)}h ago`;
+  return `${Math.round(m / 1440)}d ago`;
+}
+async function loadNews(container, query, heading) {
+  const box = el("div", "news");
+  box.append(el("div", "sub", heading || `NEWS // ${query}`));
+  const status = el("div", "muted", "Scanning feeds…");
+  box.append(status);
+  container.append(box);
+  try {
+    const r = await fetch("/api/news?q=" + encodeURIComponent(query));
+    const d = await r.json();
+    status.remove();
+    if (!d.items || !d.items.length) { box.append(el("div", "muted", "No reporting in the last 3 days.")); return; }
+    for (const it of d.items) {
+      const a = el("a", "item"); a.href = it.url; a.target = "_blank"; a.rel = "noopener";
+      a.append(el("span", "tt", it.title), el("span", "src", [it.source, it.published ? ago(it.published) : ""].filter(Boolean).join(" · ")));
+      box.append(a);
+    }
+  } catch (e) { status.textContent = "News feed unreachable."; }
+}
+
+// -------------------------------------------------------------- places
+// Which country was clicked, worked out in the browser from the same Natural
+// Earth outlines the globe draws - no geocoding service involved.
+let countryFeatures = [];
+function inRing(x, y, ring) {
+  let c = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c;
+  }
+  return c;
+}
+function countryAt(lon, lat) {
+  for (const f of countryFeatures) {
+    const g = f.geometry; if (!g) continue;
+    const polys = g.type === "Polygon" ? [g.coordinates] : g.type === "MultiPolygon" ? g.coordinates : [];
+    for (const p of polys) {
+      if (inRing(lon, lat, p[0]) && !p.slice(1).some(h => inRing(lon, lat, h))) return fullName(f.properties.name);
+    }
+  }
+  return null;
+}
+// Natural Earth's small-scale names are abbreviated ("S. Sudan"); news
+// search wants the real name.
+function fullName(n) {
+  return n.replace("Dem. Rep. Congo", "Democratic Republic of the Congo").replace(/\bFr\. S\./, "French Southern").replace(/\bS\. /, "South ").replace(/\bN\. /, "Northern ")
+    .replace(/\bW\. /, "Western ").replace(/\bDem\. /, "Democratic ").replace(/\bRep\./, "Republic")
+    .replace(/\bEq\. /, "Equatorial ").replace(/\bIs\./, "Islands").replace(/\bHerz\./, "Herzegovina");
+}
+function oceanAt(lon, lat) {       // rough, but only used to label open water
+  if (lat > 66) return "Arctic Ocean";
+  if (lat < -60) return "Southern Ocean";
+  if (lon > -70 && lon < 20) return "Atlantic Ocean";
+  if (lon >= 20 && lon < 146 && lat < 30) return "Indian Ocean";
+  return "Pacific Ocean";
+}
+let areaMarker = null;
+function selectArea(lon, lat) {
+  clearSelection();
+  const place = countryAt(lon, lat) || oceanAt(lon, lat);
+  areaMarker = viewer.entities.add({ position: Cesium.Cartesian3.fromDegrees(lon, lat),
+    point: { pixelSize: 10, color: GOLD, outlineColor: GOLD.withAlpha(0.3), outlineWidth: 8 } });
+  const card = $("card");
+  card.replaceChildren(); card.dataset.kind = "area";
+  const x = el("button", "x", "✕"); x.onclick = clearSelection;
+  card.append(x, el("h3", null, place));
+  const dl = el("dl");
+  dl.append(el("dt", null, "Position"), el("dd", null,
+    `${Math.abs(lat).toFixed(3)}°${lat >= 0 ? "N" : "S"}, ${Math.abs(lon).toFixed(3)}°${lon >= 0 ? "E" : "W"}`));
+  const here = launches.filter(l => countryAt(l.lon, l.lat) === place && netMs(l) > clockDate().getTime());
+  if (here.length) dl.append(el("dt", null, "Launches"), el("dd", null, `${here.length} upcoming from here`));
+  card.append(dl);
+  loadNews(card, place);
   card.classList.add("show");
 }
 
@@ -486,9 +615,18 @@ const fmtLocal = (ms) => new Date(ms).toLocaleString([], { weekday: "short", day
   month: "short", hour: "2-digit", minute: "2-digit" });
 
 function linkFor(l) {
-  const a = el("a", null, l.stream_url ? "▶ Watch live" : "Details ↗");
+  const a = el("a", null, l.stream_url ? "▶ Watch live" : "Launch page ↗");
   a.href = l.stream_url || l.info_url; a.target = "_blank"; a.rel = "noopener";
   return a;
+}
+function gcalLink(l) {
+  const t = (ms) => new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  const start = netMs(l);
+  const p = new URLSearchParams({ action: "TEMPLATE", text: `🚀 ${l.name}`,
+    dates: `${t(start)}/${t(start + 3600e3)}`,
+    details: `${l.rocket} · ${l.provider}\n${l.stream_url || l.info_url}`,
+    location: [l.pad, l.location].filter(Boolean).join(", ") });
+  return "https://calendar.google.com/calendar/render?" + p;
 }
 
 async function loadLaunches() {
@@ -519,6 +657,7 @@ async function loadLaunches() {
         height: 0, show: new Cesium.CallbackProperty(() => !!ent.soon, false) },
     });
     ent.padLaunches = list;
+    ent.show = layers.launches;
     padEntities.set(k, ent);
   }
   renderList();
@@ -557,7 +696,8 @@ function selectLaunch(l, fly) {
     new Cesium.BoundingSphere(Cesium.Cartesian3.fromDegrees(l.lon, l.lat, 0), 1),
     { offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-50), 4.0e6), duration: 2.2 });
   const card = $("card");
-  card.replaceChildren();
+  if (areaMarker) { viewer.entities.remove(areaMarker); areaMarker = null; }
+  card.replaceChildren(); card.dataset.kind = "launch";
   const x = el("button", "x", "✕"); x.onclick = clearSelection;
   card.append(x, el("h3", null, l.name));
   if (l.image) { const img = el("img"); img.src = l.image; img.alt = ""; img.onerror = () => img.remove(); card.append(img); }
@@ -575,8 +715,32 @@ function selectLaunch(l, fly) {
   if (l.mission) card.append(el("p", null, l.mission));
   const links = el("div", "links");
   links.append(linkFor(l));
-  if (l.stream_url) { const d = el("a", null, "Details ↗"); d.href = l.info_url; d.target = "_blank"; d.rel = "noopener"; links.append(d); }
+  if (l.stream_url) { const d = el("a", null, "Launch page ↗"); d.href = l.info_url; d.target = "_blank"; d.rel = "noopener"; links.append(d); }
+  const gc = el("a", null, "+ Google Calendar"); gc.href = gcalLink(l); gc.target = "_blank"; gc.rel = "noopener"; links.append(gc);
+  const ics = el("a", null, "+ .ics"); ics.href = `/calendar/${encodeURIComponent(l.id)}.ics`; links.append(ics);
+  const r = l.rocket_info || {};
+  if (r.wiki_url) { const w = el("a", null, "Rocket wiki ↗"); w.href = r.wiki_url; w.target = "_blank"; w.rel = "noopener"; links.append(w); }
   card.append(links);
+  const rocketName = l.rocket || l.name.split("|")[0].trim();
+  if (Object.keys(r).length) {
+    card.append(el("div", "sub", `ROCKET // ${rocketName}`));
+    const rd = el("dl");
+    const put = (k, v) => { if (v !== undefined && v !== null && v !== "") rd.append(el("dt", null, k), el("dd", null, String(v))); };
+    const n = (v) => Number(v).toLocaleString();
+    put("Maker", r.manufacturer);
+    put("Height", r.length_m && `${r.length_m} m`);
+    put("Diameter", r.diameter_m && `${r.diameter_m} m`);
+    put("Liftoff mass", r.launch_mass_t && `${n(r.launch_mass_t)} t`);
+    put("Thrust", r.thrust_kn && `${n(r.thrust_kn)} kN`);
+    put("To LEO", r.leo_capacity_kg && `${n(r.leo_capacity_kg)} kg`);
+    put("To GTO", r.gto_capacity_kg && `${n(r.gto_capacity_kg)} kg`);
+    put("Reusable", r.reusable === undefined ? "" : (r.reusable ? "Yes" : "No"));
+    put("First flight", r.maiden_flight);
+    if (r.launches != null) put("Record", `${r.successes ?? "?"} of ${r.launches} flights successful`);
+    card.append(rd);
+    if (r.description) card.append(el("p", null, r.description));
+  }
+  loadNews(card, rocketName);
   card.classList.add("show");
   renderList();
   history.replaceState(null, "", "#launch=" + encodeURIComponent(l.id));
@@ -623,7 +787,7 @@ function tickCountdowns() {
   const d = clockDate();
   $("clock").textContent = d.toISOString().slice(0, 19).replace("T", " ") + " UTC" +
     (viewer.clock.multiplier !== 1 ? `  ·  ${viewer.clock.multiplier}×` : "");
-  if (selectedSat) renderSatCard();
+  updateSatCard();
 }
 
 // ------------------------------------------------------------------- wiring
@@ -639,9 +803,71 @@ scene.postRender.addEventListener(updateTags);
 new Cesium.ScreenSpaceEventHandler(scene.canvas).setInputAction((click) => {
   const picked = scene.pick(click.position);
   const id = picked && picked.id;
-  if (id && id.satrec) selectSat(id);
-  else if (id && id.padLaunches) selectLaunch(id.padLaunches.find(l => netMs(l) > clockDate().getTime() - 3600e3) || id.padLaunches[0], false);
+  if (id && id.satrec) return selectSat(id);
+  if (id && id.padLaunches) return selectLaunch(id.padLaunches.find(l => netMs(l) > clockDate().getTime() - 3600e3) || id.padLaunches[0], false);
+  const c = viewer.camera.pickEllipsoid(click.position, Cesium.Ellipsoid.WGS84);
+  if (c) {
+    const g = Cesium.Cartographic.fromCartesian(c);
+    selectArea(Cesium.Math.toDegrees(g.longitude), Cesium.Math.toDegrees(g.latitude));
+  }
 }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+// ---------------------------------------------------------------- controls
+// Mouse: wheel zooms, middle-drag pans (the ground follows the cursor like a
+// 2D map), right-drag rotates the view around the point you're looking at
+// (sideways turns, up/down tilts), left click inspects. Touch: one finger
+// pans, pinch zooms and tilts.
+const ctl = scene.screenSpaceCameraController;
+const CE = Cesium.CameraEventType;
+ctl.rotateEventTypes = [CE.MIDDLE_DRAG, CE.LEFT_DRAG];   // LEFT_DRAG only fires on touch, see below
+ctl.tiltEventTypes = [CE.RIGHT_DRAG, CE.PINCH];
+ctl.zoomEventTypes = [CE.WHEEL, CE.PINCH];
+ctl.lookEventTypes = [];
+ctl.translateEventTypes = [];
+// Safety net: if a gesture ever leaves the camera at NaN (seen once in
+// testing after a tilt followed by a zoom), put it back where it was.
+let goodCam = null;
+scene.preRender.addEventListener(() => {
+  const c = viewer.camera;
+  if (isFinite(c.positionWC.x) && isFinite(c.heading) && isFinite(c.pitch)) {
+    goodCam = { destination: Cesium.Cartesian3.clone(c.positionWC),
+      orientation: { heading: c.heading, pitch: c.pitch, roll: c.roll } };
+  } else if (goodCam) {
+    c.setView(goodCam);
+  }
+});
+const canvas = scene.canvas;
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+// Middle-click would start the browser's autoscroll (Windows) or paste (Linux).
+canvas.addEventListener("mousedown", (e) => { if (e.button === 1) e.preventDefault(); });
+canvas.addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); });
+// A mouse's left drag must not move the globe - left is for clicking. Touch
+// keeps it, because a finger has no middle button.
+canvas.addEventListener("pointerdown", (e) => {
+  const touch = e.pointerType === "touch" || e.pointerType === "pen";
+  ctl.rotateEventTypes = touch ? [CE.LEFT_DRAG, CE.MIDDLE_DRAG] : [CE.MIDDLE_DRAG];
+  if (e.button === 1 && viewer.trackedEntity) unfollow();
+}, true);
+
+// ------------------------------------------------------------------ layers
+function applyLayers() {
+  points.show = layers.sats;
+  if (!layers.sats && selectedSat) clearSelection();
+  for (const e of padEntities.values()) e.show = layers.launches;
+  $("tags").style.display = layers.launches ? "" : "none";
+  if (!layers.launches && selectedLaunch) clearSelection();
+  // Solid-ish shell by default so the far side doesn't distract; X-ray
+  // makes the globe see-through again.
+  scene.globe.translucency.frontFaceAlpha = layers.xray ? 0.72 : 0.94;
+  scene.globe.translucency.backFaceAlpha = layers.xray ? 0.25 : 0.0;
+  gridLines.show = layers.grid; ringLines.show = layers.rings; borderLines.show = layers.borders;
+  document.querySelectorAll("[data-layer]").forEach(b => b.classList.toggle("on", !!layers[b.dataset.layer]));
+  try { localStorage.setItem("globeLayers", JSON.stringify(layers)); } catch (e) { /* ignore */ }
+}
+document.querySelectorAll("[data-layer]").forEach(b => b.onclick = () => {
+  layers[b.dataset.layer] = !layers[b.dataset.layer]; applyLayers();
+});
+applyLayers();
 
 const handler2 = new Cesium.ScreenSpaceEventHandler(scene.canvas);
 handler2.setInputAction((m) => {

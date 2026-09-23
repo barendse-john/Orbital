@@ -121,6 +121,36 @@ CREATE TABLE IF NOT EXISTS launch_alerts_sent (
     PRIMARY KEY (user_id, alert_key)
 );
 
+CREATE TABLE IF NOT EXISTS app_tokens (
+    token      TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    last_used  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS push_subs (
+    endpoint   TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL,
+    p256dh     TEXT NOT NULL,
+    auth       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS app_prefs (
+    user_id         INTEGER PRIMARY KEY,
+    digest_telegram INTEGER NOT NULL DEFAULT 1,
+    digest_push     INTEGER NOT NULL DEFAULT 1,
+    launch_telegram INTEGER NOT NULL DEFAULT 1,
+    launch_push     INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS briefings (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    items      TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS admin_users (
     user_id  INTEGER PRIMARY KEY,
     added_by INTEGER,
@@ -792,6 +822,87 @@ class Database:
             self._write, "DELETE FROM launch_alerts_sent WHERE sent_at < ?",
             (cutoff,))
         return cur.rowcount
+
+    # -------------------------------------------------------------- app
+
+    async def create_app_token(self, user_id: int, token: str) -> None:
+        await asyncio.to_thread(
+            self._write, "INSERT INTO app_tokens (token, user_id, created_at) "
+            "VALUES (?, ?, ?)", (token, user_id, _utcnow()))
+
+    async def app_token_user(self, token: str) -> int | None:
+        if not token:
+            return None
+        rows = await asyncio.to_thread(
+            self._read, "SELECT user_id FROM app_tokens WHERE token = ?", (token,))
+        if not rows:
+            return None
+        await asyncio.to_thread(
+            self._write, "UPDATE app_tokens SET last_used = ? WHERE token = ?",
+            (_utcnow(), token))
+        return int(rows[0][0])
+
+    async def revoke_app_tokens(self, user_id: int) -> int:
+        cur = await asyncio.to_thread(
+            self._write, "DELETE FROM app_tokens WHERE user_id = ?", (user_id,))
+        return cur.rowcount
+
+    async def app_prefs(self, user_id: int) -> dict:
+        rows = await asyncio.to_thread(
+            self._read, "SELECT * FROM app_prefs WHERE user_id = ?", (user_id,))
+        if rows:
+            return {k: bool(rows[0][k]) for k in rows[0].keys() if k != "user_id"}
+        return {"digest_telegram": True, "digest_push": True,
+                "launch_telegram": True, "launch_push": True}
+
+    async def set_app_pref(self, user_id: int, key: str, value: bool) -> None:
+        if key not in ("digest_telegram", "digest_push", "launch_telegram",
+                       "launch_push"):
+            raise ValueError(key)
+        await asyncio.to_thread(
+            self._write, "INSERT OR IGNORE INTO app_prefs (user_id) VALUES (?)",
+            (user_id,))
+        await asyncio.to_thread(
+            self._write, f"UPDATE app_prefs SET {key} = ? WHERE user_id = ?",
+            (int(bool(value)), user_id))
+
+    async def add_push_sub(self, user_id: int, endpoint: str, p256dh: str,
+                           auth: str) -> None:
+        await asyncio.to_thread(
+            self._write,
+            "INSERT OR REPLACE INTO push_subs (endpoint, user_id, p256dh, auth, "
+            "created_at) VALUES (?, ?, ?, ?, ?)",
+            (endpoint, user_id, p256dh, auth, _utcnow()))
+
+    async def remove_push_sub(self, endpoint: str) -> None:
+        await asyncio.to_thread(
+            self._write, "DELETE FROM push_subs WHERE endpoint = ?", (endpoint,))
+
+    async def push_subs(self, user_id: int) -> list[dict]:
+        rows = await asyncio.to_thread(
+            self._read, "SELECT endpoint, p256dh, auth FROM push_subs "
+            "WHERE user_id = ?", (user_id,))
+        return [{"endpoint": r[0], "keys": {"p256dh": r[1], "auth": r[2]}}
+                for r in rows]
+
+    async def save_briefing(self, user_id: int, items: list[dict]) -> None:
+        def _save() -> None:
+            with self._lock:
+                self.conn.execute(
+                    "INSERT INTO briefings (user_id, created_at, items) "
+                    "VALUES (?, ?, ?)", (user_id, _utcnow(), json.dumps(items)))
+                self.conn.execute(
+                    "DELETE FROM briefings WHERE user_id = ? AND id NOT IN "
+                    "(SELECT id FROM briefings WHERE user_id = ? "
+                    "ORDER BY id DESC LIMIT 14)", (user_id, user_id))
+                self.conn.commit()
+        await asyncio.to_thread(_save)
+
+    async def briefings(self, user_id: int, limit: int = 7) -> list[dict]:
+        rows = await asyncio.to_thread(
+            self._read, "SELECT created_at, items FROM briefings WHERE user_id = ? "
+            "ORDER BY id DESC LIMIT ?", (user_id, limit))
+        return [{"created_at": r[0], "items": json.loads(r[1])} for r in rows]
 
     async def stats(self, user_id: int) -> dict:
         def _stats() -> dict:
