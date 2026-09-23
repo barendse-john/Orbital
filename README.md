@@ -425,3 +425,21 @@ sudo tailscale funnel --bg --https=8443 --set-path=/calendar.ics http://127.0.0.
 
 then add `https://<pi-name>.<tailnet>.ts.net:8443/calendar.ics` in Google
 Calendar → Other calendars → From URL. Google refreshes it every few hours.
+
+## How news is chosen
+
+Every hour the news engine (`newsbot/engine.py`):
+
+1. **Collects** into a pool: Google News RSS for each topic's query and its
+   name, over 48 hours, plus the site feeds under `news.engine.feeds`
+   (BBC, Ars Technica, SpaceNews, The Verge and the New York Times by default).
+2. **Scores** each new story with the AI: which of your topics it belongs
+   to, relevance 0-10 and impact 0-10, with a few words of why. Your 👍/👎 in
+   the app are shown to the AI as examples of your taste.
+3. **Ranks** by relevance, impact, how many outlets carry the story, source
+   credibility, freshness and your votes for that outlet; duplicate coverage
+   of one event is merged.
+
+The morning briefing is the best unsent stories (max 3 per topic). Stories
+scored as major arrive as a notification straight away, at most 3 a day.
+The app's **Top now** view shows the best of the last 24 hours.

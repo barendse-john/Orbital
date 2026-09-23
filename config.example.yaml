@@ -41,6 +41,29 @@ news:
     requests_per_second: 1
   rss:
     enabled: true           # Google News RSS: free, no key, no quota
+  # The hourly news engine: collects widely, lets the AI score every story
+  # for relevance and impact, and builds the briefing from the best ones.
+  # Leave this section out to use the defaults (the feeds listed below).
+  engine:
+    enabled: true
+    # Site feeds read every hour on top of your topic searches. Add the
+    # sites you actually read; the AI sorts each story into your topics.
+    feeds:
+      - https://feeds.bbci.co.uk/news/world/rss.xml
+      - https://feeds.bbci.co.uk/news/science_and_environment/rss.xml
+      - https://feeds.arstechnica.com/arstechnica/index
+      - https://spacenews.com/feed/
+      - https://www.theverge.com/rss/index.xml
+      # New York Times - links open in full if you're signed in on the phone
+      - https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml
+      - https://rss.nytimes.com/services/xml/rss/nyt/World.xml
+      - https://rss.nytimes.com/services/xml/rss/nyt/Science.xml
+      - https://rss.nytimes.com/services/xml/rss/nyt/Space.xml
+      - https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml
+    briefing_size: 8        # stories in the morning briefing
+    per_topic: 3            # at most this many per topic
+    breaking: true          # push major stories as they happen...
+    breaking_per_day: 3     # ...but never more than this
 
 digest:
   default_time: "08:00"     # used until a user picks their own
