@@ -87,6 +87,13 @@
   .story .s { color: var(--dim); font-size: 13.5px; }
   .story img { width: 100%; max-height: 170px; object-fit: cover; border-radius: 10px; margin: 8px 0 2px; }
 
+  .story .why { color: var(--accent); font-size: 12.5px; margin-top: 6px; opacity: .85; }
+  .votes { display: flex; gap: 6px; margin-top: 8px; }
+  .votes button { padding: 4px 10px; border-radius: 99px; border: 1px solid var(--line); color: var(--dim); font-size: 13px; }
+  .votes button.on { background: rgba(255,182,40,.18); border-color: var(--accent); color: var(--accent); }
+  .seg { display: flex; gap: 6px; margin: 4px 0 10px; }
+  .seg button { flex: 1; padding: 9px; border-radius: 12px; border: 1px solid var(--line); color: var(--dim); font-weight: 600; }
+  .seg button.on { background: rgba(255,182,40,.15); color: var(--accent); border-color: rgba(255,182,40,.6); }
   .topics { display: flex; flex-wrap: wrap; gap: 8px; }
   .topic { display: inline-flex; align-items: center; gap: 4px; padding: 6px 6px 6px 12px; border-radius: 99px;
     background: var(--card2); border: 1px solid var(--line); font-size: 14px; }
@@ -400,13 +407,18 @@ async function loadMe() {
   catch (e) { if (e.status === 401) { store.set("token", ""); toast("Signed out - pair again with /app"); } me = null; }
 }
 
+let newsView = store.get("newsView", "top");
 async function renderNews() {
   const body = $("newsBody"); body.replaceChildren();
   if (!token()) { body.append(pairCard()); return; }
-  body.append(el("div", { class: "skeleton" }), el("div", { class: "skeleton" }));
+  const seg = el("div", { class: "seg" },
+    el("button", { class: newsView === "top" ? "on" : "", onclick: () => { newsView = "top"; store.set("newsView", "top"); renderNews(); } }, "Top now"),
+    el("button", { class: newsView === "brief" ? "on" : "", onclick: () => { newsView = "brief"; store.set("newsView", "brief"); renderNews(); } }, "Briefing"));
+  body.append(seg, el("div", { class: "skeleton" }), el("div", { class: "skeleton" }));
+  if (newsView === "top") return renderTop(body, seg);
   let briefings = [];
   try { briefings = (await api("/api/me/briefing")).briefings || []; } catch (e) { /* offline */ }
-  body.replaceChildren();
+  body.replaceChildren(seg);
   const latest = briefings[0];
   body.append(el("h2", null, latest ? `Briefing · ${dayLabel(Date.parse(latest.created_at))}, ${fmtTime(Date.parse(latest.created_at))}` : "Briefing"));
   if (!latest) {
@@ -426,12 +438,39 @@ async function renderNews() {
   body.append(el("h2", null, "Topics you follow"), topicsCard());
 }
 
+async function renderTop(body, seg) {
+  let stories = [];
+  try { stories = (await api("/api/me/feed")).stories || []; } catch (e) { /* offline */ }
+  body.replaceChildren(seg);
+  body.append(el("h2", null, "Best of the last 24 hours"));
+  if (!stories.length) body.append(el("div", { class: "card empty" }, el("b", null, "Nothing scored yet"),
+    "The news engine checks every hour. Give it an hour after the first install."));
+  for (const it of stories) body.append(storyCard(it));
+  body.append(el("h2", null, "Topics you follow"), topicsCard());
+}
+
 function storyCard(it) {
-  return el("a", { class: "story", href: it.url, target: "_blank", rel: "noopener" },
-    el("div", { class: "top" }, el("span", { class: "chip" }, it.topic), [it.source, it.published ? ago(it.published) : ""].filter(Boolean).join(" · ")),
-    it.image ? el("img", { src: it.image, alt: "", loading: "lazy", onerror: (e) => e.target.remove() }) : "",
-    el("div", { class: "h" }, it.title),
-    it.summary ? el("div", { class: "s" }, it.summary) : "");
+  const outlets = it.outlets > 1 ? `${it.outlets} outlets` : "";
+  const card = el("div", { class: "story" },
+    el("a", { href: it.url, target: "_blank", rel: "noopener", style: "color:inherit;display:block" },
+      el("div", { class: "top" }, el("span", { class: "chip" }, it.topic), [it.source, it.published ? ago(it.published) : "", outlets].filter(Boolean).join(" · ")),
+      it.image ? el("img", { src: it.image, alt: "", loading: "lazy", onerror: (e) => e.target.remove() }) : "",
+      el("div", { class: "h" }, it.title),
+      it.summary ? el("div", { class: "s" }, it.summary) : "",
+      it.why ? el("div", { class: "why" }, "Why: " + it.why) : ""));
+  if (it.key) {
+    const up = el("button", { "aria-label": "More like this" }, "👍"), down = el("button", { "aria-label": "Not for me" }, "👎");
+    const paint = () => { up.classList.toggle("on", it.vote > 0); down.classList.toggle("on", it.vote < 0); };
+    const send = async (v) => {
+      const nv = it.vote === v ? 0 : v;
+      try { await api("/api/me/vote", { method: "POST", body: { key: it.key, vote: nv } }); it.vote = nv; paint();
+        toast(nv > 0 ? "More like this ✓" : nv < 0 ? "Fewer like this ✓" : "Vote removed"); }
+      catch (e) { toast(e.message); }
+    };
+    up.onclick = () => send(1); down.onclick = () => send(-1); paint();
+    card.append(el("div", { class: "votes" }, up, down));
+  }
+  return card;
 }
 
 function topicsCard() {
@@ -560,7 +599,8 @@ async function renderSettings() {
       toggle(me.digest_enabled, (v, i) => save({ digest_enabled: v }, i))),
     setting("Time", null, time),
     setting("Notify me in the app", null, toggle(p.digest_push, (v, i) => save({ digest_push: v }, i))),
-    setting("Also send to Telegram", "Turn off to move your news to the app only", toggle(p.digest_telegram, (v, i) => save({ digest_telegram: v }, i)))));
+    setting("Also send to Telegram", "Turn off to move your news to the app only", toggle(p.digest_telegram, (v, i) => save({ digest_telegram: v }, i))),
+    setting("Breaking news", "Major stories on your topics as they happen (max 3 a day)", toggle(p.breaking_push !== false, (v, i) => save({ breaking_push: v }, i)))));
 
   const feed = `${location.origin}/calendar.ics`;
   body.append(el("h2", null, "Calendar"), el("div", { class: "group" },
@@ -588,7 +628,7 @@ document.querySelectorAll("nav [data-tab]").forEach(b => b.onclick = () => { his
 $("refresh").onclick = async () => {
   const b = $("refresh"); b.classList.add("spin");
   const tab = store.get("tab", "launches");
-  if (tab === "news") await refreshBriefing(); else { await loadLaunches(); await loadMe(); if (tab === "settings") renderSettings(); }
+  if (tab === "news") { if (newsView === "top") await renderNews(); else await refreshBriefing(); } else { await loadLaunches(); await loadMe(); if (tab === "settings") renderSettings(); }
   b.classList.remove("spin");
 };
 setInterval(() => {
