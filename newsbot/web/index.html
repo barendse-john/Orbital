@@ -15,92 +15,120 @@
 <script src="https://cdn.jsdelivr.net/npm/cesium@1.120.0/Build/Cesium/Cesium.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.120.0/Build/Cesium/Widgets/widgets.css">
 <script src="https://cdn.jsdelivr.net/npm/satellite.js@5.0.0/dist/satellite.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #05070d; --panel: rgba(12, 16, 26, .82); --line: rgba(255,255,255,.10);
-    --text: #e8edf6; --muted: #8d98ad; --accent: #ffb547; --hot: #ff5d4a; --ok: #6be3a4;
-    --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --bg: #020409; --panel: rgba(2, 12, 18, .80); --line: rgba(0, 229, 255, .28);
+    --text: #d7faff; --muted: #5d9eaa; --accent: #00e5ff; --hot: #ff2d6f; --ok: #39ff88; --warn: #ffcc00;
+    --font: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
-    font: 14px/1.4 var(--font); overflow: hidden; }
+    font: 12.5px/1.45 var(--font); overflow: hidden; }
   #globe { position: fixed; inset: 0; }
-  .cesium-viewer-bottom { display: none; }        /* credits live in the About line */
+  .cesium-viewer-bottom { display: none; }
   a { color: var(--accent); }
-  .glass { background: var(--panel); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-    border: 1px solid var(--line); border-radius: 12px; }
+  /* CRT scanlines + vignette, over everything but never in the way */
+  body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 20;
+    background: repeating-linear-gradient(to bottom, transparent 0 2px, rgba(0,229,255,.035) 2px 3px),
+                radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,.55) 100%); }
+  /* HUD panels: hairline border with bright corner brackets */
+  .glass { --c: var(--accent);
+    background:
+      linear-gradient(var(--c),var(--c)) top left/12px 2px, linear-gradient(var(--c),var(--c)) top left/2px 12px,
+      linear-gradient(var(--c),var(--c)) top right/12px 2px, linear-gradient(var(--c),var(--c)) top right/2px 12px,
+      linear-gradient(var(--c),var(--c)) bottom left/12px 2px, linear-gradient(var(--c),var(--c)) bottom left/2px 12px,
+      linear-gradient(var(--c),var(--c)) bottom right/12px 2px, linear-gradient(var(--c),var(--c)) bottom right/2px 12px,
+      var(--panel);
+    background-repeat: no-repeat; border: 1px solid var(--line); border-radius: 2px;
+    box-shadow: 0 0 20px rgba(0,229,255,.10), inset 0 0 26px rgba(0,229,255,.05);
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
 
   #bar { position: fixed; top: 12px; left: 12px; right: 12px; display: flex; gap: 8px;
     align-items: center; flex-wrap: wrap; pointer-events: none; z-index: 5; }
   #bar > * { pointer-events: auto; }
-  .brand { padding: 8px 12px; font-weight: 650; letter-spacing: .2px; }
-  .brand small { display: block; font-weight: 400; color: var(--muted); font-size: 11px; }
+  .brand { padding: 7px 14px; font-weight: 700; letter-spacing: 2px; color: var(--accent);
+    text-shadow: 0 0 10px rgba(0,229,255,.6); }
+  .brand small { display: block; font-weight: 400; color: var(--muted); font-size: 10px; letter-spacing: 1.5px;
+    text-shadow: none; }
+  .live { color: var(--ok); animation: blink 1.4s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: .2; } }
   .chips { display: flex; gap: 6px; padding: 6px; flex-wrap: wrap; }
-  button, .chip { font: inherit; color: var(--text); background: rgba(255,255,255,.06);
-    border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; cursor: pointer; }
-  button:hover, .chip:hover { background: rgba(255,255,255,.12); }
-  button.on { background: rgba(255,181,71,.18); border-color: rgba(255,181,71,.55); }
+  button, .chip { font: inherit; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--text);
+    background: rgba(0,229,255,.05); border: 1px solid var(--line); border-radius: 2px; padding: 5px 9px; cursor: pointer; }
+  button:hover, .chip:hover { background: rgba(0,229,255,.15); border-color: var(--accent); }
+  button.on { background: rgba(0,229,255,.18); border-color: var(--accent); color: #fff;
+    box-shadow: 0 0 10px rgba(0,229,255,.35); }
   .chip { display: inline-flex; align-items: center; gap: 6px; user-select: none; }
-  .chip.off { opacity: .45; }
-  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
-  #clock { padding: 8px 12px; font-variant-numeric: tabular-nums; margin-left: auto; }
+  .chip.off { opacity: .4; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; box-shadow: 0 0 8px currentColor; }
+  #clock { padding: 8px 12px; font-variant-numeric: tabular-nums; margin-left: auto; color: var(--accent); }
 
-  #side { position: fixed; top: 84px; right: 12px; bottom: 12px; width: 330px; display: flex;
+  #side { position: fixed; top: 84px; right: 12px; bottom: 44px; width: 340px; display: flex;
     flex-direction: column; z-index: 4; }
   #side.hidden { display: none; }
-  #side h2 { margin: 0; padding: 12px 14px 8px; font-size: 13px; text-transform: uppercase;
-    letter-spacing: .8px; color: var(--muted); font-weight: 600; }
-  #list { overflow-y: auto; padding: 0 6px 8px; }
-  .row { padding: 8px; border-radius: 8px; cursor: pointer; display: grid;
+  #side h2 { margin: 0; padding: 12px 14px 8px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 2px; color: var(--accent); font-weight: 600; border-bottom: 1px solid var(--line); }
+  #side h2::before { content: "> "; color: var(--hot); }
+  #list { overflow-y: auto; padding: 6px 6px 8px; scrollbar-color: var(--line) transparent; }
+  .row { padding: 8px; border-left: 2px solid transparent; cursor: pointer; display: grid;
     grid-template-columns: 1fr auto; gap: 2px 8px; }
-  .row:hover, .row.sel { background: rgba(255,255,255,.07); }
-  .row .n { font-weight: 560; grid-column: 1 / 3; }
-  .row .m { color: var(--muted); font-size: 12px; }
-  .row .t { font-variant-numeric: tabular-nums; font-size: 12px; text-align: right; }
-  .st { font-size: 10.5px; padding: 1px 6px; border-radius: 99px; border: 1px solid var(--line); }
-  .st.Go { color: var(--ok); border-color: rgba(107,227,164,.5); }
-  .st.TBC { color: var(--accent); border-color: rgba(255,181,71,.5); }
+  .row:hover, .row.sel { background: rgba(0,229,255,.07); border-left-color: var(--accent); }
+  .row .n { font-weight: 600; grid-column: 1 / 3; }
+  .row .m { color: var(--muted); font-size: 11px; }
+  .row .t { font-variant-numeric: tabular-nums; font-size: 11.5px; text-align: right; color: var(--accent); }
+  .st { font-size: 10px; padding: 0 5px; border: 1px solid var(--line); letter-spacing: 1px; }
+  .st.Go { color: var(--ok); border-color: rgba(57,255,136,.6); }
+  .st.TBC { color: var(--warn); border-color: rgba(255,204,0,.6); }
 
-  #card { position: fixed; left: 12px; bottom: 12px; width: 360px; max-height: 55vh; overflow-y: auto;
+  #card { position: fixed; left: 12px; bottom: 44px; width: 370px; max-height: 55vh; overflow-y: auto;
     padding: 14px; z-index: 4; display: none; }
   #card.show { display: block; }
-  #card h3 { margin: 0 34px 4px 0; font-size: 16px; }
+  #card h3 { margin: 0 34px 4px 0; font-size: 14px; color: #fff; letter-spacing: .5px; }
+  #card h3::before { content: "[ TARGET ] "; color: var(--hot); font-size: 10px; letter-spacing: 1.5px; display: block; }
   #card .x { position: absolute; top: 10px; right: 10px; padding: 2px 8px; }
-  #card img { width: 100%; border-radius: 8px; margin: 8px 0; max-height: 170px; object-fit: cover; }
+  #card img { width: 100%; margin: 8px 0; max-height: 160px; object-fit: cover;
+    filter: grayscale(.6) contrast(1.15) sepia(.3) hue-rotate(140deg); border: 1px solid var(--line); }
   #card dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 8px 0; }
-  #card dt { color: var(--muted); }
+  #card dt { color: var(--muted); text-transform: uppercase; font-size: 10.5px; letter-spacing: 1px; padding-top: 1px; }
   #card dd { margin: 0; font-variant-numeric: tabular-nums; }
-  #card p { color: #c5ccda; margin: 8px 0; }
+  #card p { color: #a9d6de; margin: 8px 0; }
   .links { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-  .links a, .links button { text-decoration: none; padding: 6px 10px; border-radius: 8px;
-    border: 1px solid rgba(255,181,71,.5); background: rgba(255,181,71,.12); color: var(--text); }
+  .links a, .links button { text-decoration: none; padding: 6px 10px; border-radius: 2px; font-size: 11px;
+    letter-spacing: 1px; text-transform: uppercase; border: 1px solid var(--accent);
+    background: rgba(0,229,255,.12); color: var(--text); }
+  .links a:hover, .links button:hover { box-shadow: 0 0 12px rgba(0,229,255,.5); }
 
   /* Launch tags pinned above their pad */
   #tags { position: fixed; inset: 0; pointer-events: none; z-index: 3; }
-  .tag { position: absolute; transform: translate(-50%, -100%); pointer-events: auto;
-    padding-bottom: 34px; }
-  .tag::after { content: ""; position: absolute; left: 50%; bottom: 0; width: 1.5px; height: 34px;
-    background: linear-gradient(var(--accent), transparent); }
-  .tag .box { padding: 7px 10px; min-width: 150px; max-width: 220px; text-align: center; }
-  .tag .nm { font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden;
+  .tag { position: absolute; transform: translate(-50%, -100%); pointer-events: auto; padding-bottom: 34px; }
+  .tag::after { content: ""; position: absolute; left: 50%; bottom: 0; width: 1px; height: 34px;
+    background: linear-gradient(var(--accent), transparent); box-shadow: 0 0 6px var(--accent); }
+  .tag .box { padding: 7px 10px; min-width: 160px; max-width: 230px; text-align: center; }
+  .tag .nm { font-weight: 600; font-size: 11.5px; white-space: nowrap; overflow: hidden;
     text-overflow: ellipsis; cursor: pointer; }
-  .tag .cd { font-variant-numeric: tabular-nums; color: var(--accent); font-size: 13px; }
-  .tag a { display: inline-block; margin-top: 3px; font-size: 12px; font-weight: 600; }
-  .tag .more { color: var(--muted); font-size: 11px; }
-  .tag.hot .box { border-color: rgba(255,93,74,.7); box-shadow: 0 0 0 0 rgba(255,93,74,.6);
-    animation: pulse 1.8s infinite; }
-  .tag.hot .cd { color: var(--hot); }
-  @keyframes pulse { 70% { box-shadow: 0 0 0 10px rgba(255,93,74,0); } 100% { box-shadow: 0 0 0 0 rgba(255,93,74,0); } }
+  .tag .cd { font-variant-numeric: tabular-nums; color: var(--accent); font-size: 14px; font-weight: 700;
+    text-shadow: 0 0 10px currentColor; }
+  .tag a { display: inline-block; margin-top: 3px; font-size: 11px; font-weight: 600; letter-spacing: 1px;
+    text-transform: uppercase; }
+  .tag .more { color: var(--muted); font-size: 10px; }
+  .tag.hot .box { --c: var(--hot); border-color: rgba(255,45,111,.7); animation: pulse 1.6s infinite; }
+  .tag.hot::after { background: linear-gradient(var(--hot), transparent); box-shadow: 0 0 6px var(--hot); }
+  .tag.hot .cd, .tag.hot a { color: var(--hot); }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(255,45,111,.6); } 70% { box-shadow: 0 0 0 12px rgba(255,45,111,0); } 100% { box-shadow: 0 0 0 0 rgba(255,45,111,0); } }
 
+  #hud { position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 5; padding: 5px 14px;
+    display: flex; gap: 18px; font-size: 11px; white-space: nowrap; color: var(--muted); letter-spacing: .5px; }
+  #hud b { color: var(--accent); font-weight: 600; }
   #msg { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 16px 20px;
     display: none; z-index: 9; max-width: 90vw; text-align: center; }
-  #about { position: fixed; left: 12px; bottom: 6px; font-size: 10.5px; color: var(--muted); z-index: 2; }
-  #card.show ~ #about { display: none; }
+  #about { position: fixed; right: 12px; bottom: 12px; font-size: 9.5px; color: var(--muted); z-index: 2; opacity: .7; }
 
   @media (max-width: 720px) {
-    #side { top: auto; left: 8px; right: 8px; width: auto; height: 38vh; bottom: 8px; }
-    #card { left: 8px; right: 8px; width: auto; bottom: 8px; max-height: 50vh; z-index: 6; }
-    #clock { display: none; }
+    #side { top: auto; left: 8px; right: 8px; width: auto; height: 38vh; bottom: 40px; }
+    #card { left: 8px; right: 8px; width: auto; bottom: 40px; max-height: 50vh; z-index: 6; }
+    #clock, #about, .hud-extra { display: none; }
     .brand small { display: none; }
     #bar { top: 8px; left: 8px; right: 8px; }
   }
@@ -111,7 +139,7 @@
 <div id="tags"></div>
 
 <div id="bar">
-  <div class="glass brand">Launch Globe<small>WGS84 ellipsoid · live SGP4 orbits</small></div>
+  <div class="glass brand">ORBITAL//WATCH<small><span class="live">●</span> LIVE · WGS84 · SGP4</small></div>
   <div class="glass chips" id="groups"></div>
   <div class="glass chips">
     <button data-speed="1" class="on">1×</button>
@@ -119,6 +147,7 @@
     <button data-speed="600">600×</button>
     <button id="now">Now</button>
     <button id="toggleList" class="on">Launches</button>
+    <button id="viewMode">Real view</button>
   </div>
   <div class="glass" id="clock">--</div>
 </div>
@@ -130,16 +159,17 @@
 
 <div id="card" class="glass"></div>
 <div id="msg" class="glass"></div>
-<div id="about">Launches: The Space Devs · Orbits: CelesTrak · Imagery: Esri, Natural Earth · CesiumJS</div>
+<div id="hud" class="glass"><span id="coords">LAT --.----  LON ---.----</span><span class="hud-extra" id="stats">OBJ 0 · LAUNCH 0</span></div>
+<div id="about">© OpenStreetMap · CARTO · Esri · CelesTrak · The Space Devs</div>
 
 <script>
 "use strict";
 const SOON_HOURS = 72;      // launches closer than this get a tag above their pad
 const HOT_MINUTES = 60;     // ...and pulse red inside the last hour
 const GROUP_COLORS = {
-  stations: "#ffcc4d", visual: "#9fd3ff", gnss: "#7dffb0", "gps-ops": "#7dffb0",
-  galileo: "#7dffb0", weather: "#d6a2ff", starlink: "#f2f2f2", science: "#ff9ecb",
-  geo: "#ff8a5c", active: "#b8c4d9",
+  stations: "#ffcc00", visual: "#00e5ff", gnss: "#39ff88", "gps-ops": "#39ff88",
+  galileo: "#39ff88", weather: "#b36bff", starlink: "#e8faff", science: "#ff5cf0",
+  geo: "#ff8a3d", active: "#7fa8b3",
 };
 const GROUP_NAMES = { stations: "Space stations", visual: "Brightest", gnss: "GNSS",
   weather: "Weather", starlink: "Starlink", science: "Science", geo: "GEO", active: "All active" };
@@ -170,14 +200,47 @@ const viewer = new Cesium.Viewer("globe", {
   navigationHelpButton: false, animation: false, timeline: false, fullscreenButton: false,
   infoBox: false, selectionIndicator: false, shouldAnimate: true,
 });
-viewer.imageryLayers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({
+const baseLayer = viewer.imageryLayers.get(0);
+const realLayer = viewer.imageryLayers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({
   url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
   maximumLevel: 19, credit: "Esri, Maxar, Earthstar Geographics",
 }));
+// Cyber view: CARTO's dark map for coastlines and borders, then a neon
+// lat/lon grid on top. If CARTO can't be reached, the darkened base layer
+// underneath still gives the same look.
+const cyberLayer = viewer.imageryLayers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({
+  url: "https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
+  subdomains: "abcd", maximumLevel: 18, credit: "© OpenStreetMap contributors © CARTO",
+}));
+cyberLayer.brightness = 1.9; cyberLayer.contrast = 1.25;
+const CYAN = Cesium.Color.fromCssColorString("#00e5ff");
+const HOT = Cesium.Color.fromCssColorString("#ff2d6f");
+const gridLayer = viewer.imageryLayers.addImageryProvider(new Cesium.GridImageryProvider({
+  cells: 4, color: CYAN.withAlpha(0.32), glowColor: CYAN.withAlpha(0.06), glowWidth: 3,
+  backgroundColor: Cesium.Color.TRANSPARENT,
+}));
 const scene = viewer.scene;
-scene.globe.enableLighting = true;            // real day/night terminator
-scene.globe.showGroundAtmosphere = true;
+scene.globe.baseColor = Cesium.Color.fromCssColorString("#01080d");
 scene.fog.enabled = true;
+
+function applyMode(mode) {
+  const cyber = mode !== "real";
+  realLayer.show = !cyber; cyberLayer.show = cyber; gridLayer.show = cyber;
+  baseLayer.brightness = cyber ? 0.4 : 1; baseLayer.saturation = cyber ? 0.35 : 1;
+  baseLayer.contrast = cyber ? 1.4 : 1; baseLayer.hue = cyber ? 0.35 : 0;
+  scene.globe.enableLighting = !cyber;              // real day/night terminator
+  scene.globe.showGroundAtmosphere = !cyber;
+  scene.skyAtmosphere.hueShift = cyber ? -0.06 : 0;
+  scene.skyAtmosphere.saturationShift = cyber ? 0.4 : 0;
+  scene.skyAtmosphere.brightnessShift = cyber ? -0.25 : 0;
+  scene.sun.show = !cyber; scene.moon.show = !cyber;
+  $("viewMode").textContent = cyber ? "Real view" : "Cyber view";
+  try { localStorage.setItem("globeMode", cyber ? "cyber" : "real"); } catch (e) { /* private mode */ }
+}
+let savedMode = "cyber";
+try { savedMode = localStorage.getItem("globeMode") || "cyber"; } catch (e) { /* ignore */ }
+applyMode(savedMode);
+$("viewMode").onclick = () => applyMode($("viewMode").textContent.startsWith("Real") ? "real" : "cyber");
 scene.screenSpaceCameraController.minimumZoomDistance = 200;
 scene.screenSpaceCameraController.maximumZoomDistance = 2.0e8;   // far enough to see GEO
 viewer.clock.clockStep = Cesium.ClockStep.SYSTEM_CLOCK_MULTIPLIER;
@@ -275,11 +338,11 @@ function drawOrbit(sat, date) {
   // A PolylineCollection updates synchronously; an Entity polyline rebuilds
   // its geometry on a worker every time and never settled at this rate.
   if (!orbitEntity) {
-    orbitEntity = orbitLines.add({ positions: pts, width: 1.6,
-      material: Cesium.Material.fromType("Color", { color: sat.color.withAlpha(0.85) }) });
+    orbitEntity = orbitLines.add({ positions: pts, width: 4,
+      material: Cesium.Material.fromType("PolylineGlow", { color: sat.color.withAlpha(0.9), glowPower: 0.3 }) });
   } else {
     orbitEntity.positions = pts;
-    orbitEntity.material.uniforms.color = sat.color.withAlpha(0.85);
+    orbitEntity.material.uniforms.color = sat.color.withAlpha(0.95);
   }
   orbitEntity.show = true;
 }
@@ -352,6 +415,7 @@ let selectedLaunch = null;
 const padEntities = new Map();    // pad key -> entity
 const tagEls = new Map();         // pad key -> tag element
 
+let pingRadius = 1, pingColor = HOT.withAlpha(0);
 const padKey = (l) => `${l.lat.toFixed(3)},${l.lon.toFixed(3)}`;
 const netMs = (l) => Date.parse(l.net);
 
@@ -391,9 +455,12 @@ async function loadLaunches() {
     list.sort((a, b) => netMs(a) - netMs(b));
     const ent = viewer.entities.add({
       position: Cesium.Cartesian3.fromDegrees(list[0].lon, list[0].lat, 0),
-      point: { pixelSize: 9, color: Cesium.Color.fromCssColorString("#ffb547"),
-        outlineColor: Cesium.Color.BLACK, outlineWidth: 2,
-        disableDepthTestDistance: 0 },
+      point: { pixelSize: 8, color: HOT, outlineColor: HOT.withAlpha(0.35), outlineWidth: 5 },
+      // Radar ping around pads with a launch in the next 72 hours.
+      ellipse: { semiMajorAxis: new Cesium.CallbackProperty(() => pingRadius, false),
+        semiMinorAxis: new Cesium.CallbackProperty(() => pingRadius, false),
+        material: new Cesium.ColorMaterialProperty(new Cesium.CallbackProperty(() => pingColor, false)),
+        height: 0, show: new Cesium.CallbackProperty(() => !!ent.soon, false) },
     });
     ent.padLaunches = list;
     padEntities.set(k, ent);
@@ -469,6 +536,7 @@ function updateTags() {
   for (const [k, ent] of padEntities) {
     const soon = ent.padLaunches.filter(l => {
       const dt = netMs(l) - now; return dt > -3600e3 && dt < SOON_HOURS * 3600e3; });
+    ent.soon = soon.length > 0;
     let tag = tagEls.get(k);
     if (!soon.length) { if (tag) { tag.remove(); tagEls.delete(k); } continue; }
     const l = soon[0];
@@ -504,6 +572,9 @@ function tickCountdowns() {
 
 // ------------------------------------------------------------------- wiring
 scene.preUpdate.addEventListener(() => {
+  const phase = (performance.now() / 2600) % 1;       // one ping every 2.6 s
+  pingRadius = 15000 + phase * 450000;
+  pingColor = HOT.withAlpha(0.4 * (1 - phase));
   updateSatellites(false);
   if (selectedSat && performance.now() - lastOrbit > 2000) { lastOrbit = performance.now(); drawOrbit(selectedSat, clockDate()); }
 });
@@ -515,6 +586,20 @@ new Cesium.ScreenSpaceEventHandler(scene.canvas).setInputAction((click) => {
   if (id && id.satrec) selectSat(id);
   else if (id && id.padLaunches) selectLaunch(id.padLaunches.find(l => netMs(l) > clockDate().getTime() - 3600e3) || id.padLaunches[0], false);
 }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+const handler2 = new Cesium.ScreenSpaceEventHandler(scene.canvas);
+handler2.setInputAction((m) => {
+  const c = viewer.camera.pickEllipsoid(m.endPosition, Cesium.Ellipsoid.WGS84);
+  if (!c) { $("coords").textContent = "LAT --.----  LON ---.----"; return; }
+  const g = Cesium.Cartographic.fromCartesian(c);
+  const la = Cesium.Math.toDegrees(g.latitude), lo = Cesium.Math.toDegrees(g.longitude);
+  $("coords").innerHTML = `LAT <b>${Math.abs(la).toFixed(4)}°${la >= 0 ? "N" : "S"}</b>  LON <b>${Math.abs(lo).toFixed(4)}°${lo >= 0 ? "E" : "W"}</b>`;
+}, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+setInterval(() => {
+  const shown = sats.filter(s => s.point.show).length;
+  const soon = launches.filter(l => { const d = netMs(l) - clockDate().getTime(); return d > 0 && d < 72 * 3600e3; }).length;
+  $("stats").innerHTML = `OBJ <b>${shown}</b> · LAUNCH&lt;72H <b>${soon}</b> · UPLINK <b style="color:var(--ok)">OK</b>`;
+}, 2000);
 
 document.querySelectorAll("[data-speed]").forEach(b => b.onclick = () => {
   viewer.clock.multiplier = Number(b.dataset.speed);

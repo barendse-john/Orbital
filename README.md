@@ -365,7 +365,8 @@ satellites (CelesTrak), both free and keyless.
   (launches marked Go or TBC; a launch that slips is reminded again).
 
 **The globe** is served by the bot itself at `http://<pi-hostname>.local:8080`
-on your home network - no extra service. It's a CesiumJS globe on the real
+on your home network - no extra service. It opens in a see-through amber "hologram" view (Real view button switches
+to satellite imagery). It is a CesiumJS globe on the real
 WGS84 ellipsoid (flattened at the poles), with day/night lighting and
 Google-Earth-style controls: drag to rotate, scroll or pinch to zoom,
 right-drag or two-finger drag to tilt. Launches in the next 72 hours get a
