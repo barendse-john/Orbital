@@ -184,7 +184,7 @@
 
 <div id="card" class="glass"></div>
 <div id="msg" class="glass"></div>
-<div id="hud" class="glass"><span id="clock">--</span><span id="coords">LAT --.----  LON ---.----</span><span class="hud-extra">WHEEL zoom · MMB pan · RMB rotate/tilt · LMB inspect</span><span class="hud-extra" id="stats">OBJ 0 · LAUNCH 0</span></div>
+<div id="hud" class="glass"><span id="clock">--</span><span id="coords">LAT --.----  LON ---.----</span><span class="hud-extra">WHEEL zoom · MMB pan · RMB rotate · CTRL+RMB tilt · LMB inspect</span><span class="hud-extra" id="stats">OBJ 0 · LAUNCH 0</span></div>
 <div id="about">Natural Earth · Esri · CelesTrak · The Space Devs</div>
 
 <script>
@@ -885,41 +885,58 @@ new Cesium.ScreenSpaceEventHandler(scene.canvas).setInputAction((click) => {
 }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
 // ---------------------------------------------------------------- controls
-// Mouse: wheel zooms, middle-drag pans (the ground follows the cursor like a
-// 2D map), right-drag rotates the view around the point you're looking at
-// (sideways turns, up/down tilts), left click inspects. Touch: one finger
-// pans, pinch zooms and tilts.
+// Mouse:
+//   wheel              zoom (towards the cursor)
+//   middle-drag        pan - the ground follows the cursor, like a 2D map
+//   right-drag         rotate the globe about its own axis like a desk
+//                      globe (sideways) and tip it north/south (up/down),
+//                      north stays up
+//   Ctrl + right-drag  tilt the view towards the horizon
+//   left click         inspect
+// Touch: one finger pans, pinch zooms and tilts.
 const ctl = scene.screenSpaceCameraController;
 const CE = Cesium.CameraEventType;
-ctl.rotateEventTypes = [CE.MIDDLE_DRAG, CE.LEFT_DRAG];   // LEFT_DRAG only fires on touch, see below
-ctl.tiltEventTypes = [CE.RIGHT_DRAG, CE.PINCH];
+ctl.rotateEventTypes = [CE.MIDDLE_DRAG];
+ctl.tiltEventTypes = [CE.PINCH, { eventType: CE.RIGHT_DRAG, modifier: Cesium.KeyboardEventModifier.CTRL }];
 ctl.zoomEventTypes = [CE.WHEEL, CE.PINCH];
 ctl.lookEventTypes = [];
 ctl.translateEventTypes = [];
-// Safety net: if a gesture ever leaves the camera at NaN (seen once in
-// testing after a tilt followed by a zoom), put it back where it was.
-let goodCam = null;
-scene.preRender.addEventListener(() => {
-  const c = viewer.camera;
-  if (isFinite(c.positionWC.x) && isFinite(c.heading) && isFinite(c.pitch)) {
-    goodCam = { destination: Cesium.Cartesian3.clone(c.positionWC),
-      orientation: { heading: c.heading, pitch: c.pitch, roll: c.roll } };
-  } else if (goodCam) {
-    c.setView(goodCam);
-  }
-});
 const canvas = scene.canvas;
 canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 // Middle-click would start the browser's autoscroll (Windows) or paste (Linux).
 canvas.addEventListener("mousedown", (e) => { if (e.button === 1) e.preventDefault(); });
 canvas.addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); });
-// A mouse's left drag must not move the globe - left is for clicking. Touch
-// keeps it, because a finger has no middle button.
+
+let spin = null;                    // right-drag state
 canvas.addEventListener("pointerdown", (e) => {
   const touch = e.pointerType === "touch" || e.pointerType === "pen";
+  // A mouse's left button is for clicking; a finger has nothing else.
   ctl.rotateEventTypes = touch ? [CE.LEFT_DRAG, CE.MIDDLE_DRAG] : [CE.MIDDLE_DRAG];
   if (e.button === 1 && viewer.trackedEntity) unfollow();
+  if (e.button === 2 && !e.ctrlKey && !touch) {
+    if (viewer.trackedEntity) unfollow();
+    spin = { x: e.clientX, y: e.clientY, id: e.pointerId };
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* older browsers */ }
+  }
 }, true);
+canvas.addEventListener("pointermove", (e) => {
+  if (!spin || e.pointerId !== spin.id) return;
+  const dx = e.clientX - spin.x, dy = e.clientY - spin.y;
+  spin.x = e.clientX; spin.y = e.clientY;
+  // Radians per pixel: a full drag across the screen turns the globe half a
+  // turn when zoomed out, proportionally less when close in.
+  const h = viewer.camera.positionCartographic.height;
+  const k = Math.PI / canvas.clientWidth * Math.min(1, Math.max(0.02, h / 1.2e7));
+  // Signs chosen so the globe follows the hand: drag right and the surface
+  // moves right, drag down and it moves down.
+  viewer.camera.rotate(Cesium.Cartesian3.UNIT_Z, dx * k);    // spin about the poles
+  viewer.camera.rotateUp(-dy * k);
+  // Stop short of the poles so north never flips.
+  if (Math.abs(viewer.camera.positionCartographic.latitude) > Cesium.Math.toRadians(85)) viewer.camera.rotateUp(dy * k);
+});
+const endSpin = (e) => { if (spin && e.pointerId === spin.id) spin = null; };
+canvas.addEventListener("pointerup", endSpin);
+canvas.addEventListener("pointercancel", endSpin);
 
 // ------------------------------------------------------------------ layers
 function applyLayers() {
