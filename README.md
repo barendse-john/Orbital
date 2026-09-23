@@ -368,8 +368,14 @@ satellites (CelesTrak), both free and keyless.
 on your home network - no extra service. It opens in a see-through amber "hologram" view (Real view button switches
 to satellite imagery). It is a CesiumJS globe on the real
 WGS84 ellipsoid (flattened at the poles), with day/night lighting and
-Google-Earth-style controls: drag to rotate, scroll or pinch to zoom,
-right-drag or two-finger drag to tilt. Launches in the next 72 hours get a
+controls: scroll wheel zooms, right-drag rotates the globe, middle-drag
+pans sideways like a 2D map (Ctrl+right-drag tilts; on a phone, one-finger
+drag rotates and pinch zooms). Left-click inspects: a country or ocean
+shows its latest news, a satellite shows its orbit and news about it, a
+launch pad shows the launch and the rocket's specs and news. The layer
+buttons (Sats, Launches, Grid, Rings, Borders) hide things you don't want.
+Globe news comes from Google News RSS via `/api/news`, cached 15 minutes -
+it never spends the GNews allowance the digests use. Launches in the next 72 hours get a
 card pinned above their pad with a live countdown and link (pulsing red in the
 last hour). Satellites fly on their actual orbits, propagated with SGP4 in the
 browser; tap one for altitude, speed and its full orbit, or Follow it. The

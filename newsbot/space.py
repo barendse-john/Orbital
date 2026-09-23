@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote_plus
@@ -78,6 +78,8 @@ class Launch:
     stream_url: str
     info_url: str
     image: str
+    # Vehicle facts for the globe's launch card: size, capacity, record.
+    rocket_info: dict = field(default_factory=dict)
 
     @property
     def net_dt(self) -> datetime:
@@ -122,6 +124,7 @@ def parse_launch(raw: dict) -> Launch | None:
 
     name = str(raw.get("name") or "Unnamed launch")
     return Launch(
+        rocket_info=rocket_facts(rocket),
         id=str(raw["id"]),
         name=name,
         net=net.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -139,6 +142,36 @@ def parse_launch(raw: dict) -> Launch | None:
         info_url="https://www.google.com/search?q=" + quote_plus(name + " launch"),
         image=image,
     )
+
+
+def rocket_facts(conf: dict) -> dict:
+    """The parts of a Launch Library launcher configuration worth showing.
+    Every field is optional - the free tier sometimes returns a slim record."""
+    if not isinstance(conf, dict):
+        return {}
+    image = conf.get("image")
+    if isinstance(image, dict):
+        image = image.get("image_url") or image.get("thumbnail_url")
+    maker = conf.get("manufacturer") or {}
+    out = {
+        "family": conf.get("family") if isinstance(conf.get("family"), str) else "",
+        "manufacturer": maker.get("name", "") if isinstance(maker, dict) else "",
+        "description": conf.get("description") or "",
+        "length_m": _num(conf.get("length")),
+        "diameter_m": _num(conf.get("diameter")),
+        "launch_mass_t": _num(conf.get("launch_mass")),
+        "leo_capacity_kg": _num(conf.get("leo_capacity")),
+        "gto_capacity_kg": _num(conf.get("gto_capacity")),
+        "thrust_kn": _num(conf.get("to_thrust")),
+        "reusable": conf.get("reusable") if isinstance(conf.get("reusable"), bool) else None,
+        "maiden_flight": conf.get("maiden_flight") or "",
+        "launches": conf.get("total_launch_count"),
+        "successes": conf.get("successful_launches"),
+        "failures": conf.get("failed_launches"),
+        "wiki_url": conf.get("wiki_url") or "",
+        "image": image if isinstance(image, str) else "",
+    }
+    return {k: v for k, v in out.items() if v not in ("", None)}
 
 
 def parse_tle(text: str, limit: int) -> list[list[str]]:

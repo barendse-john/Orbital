@@ -10,7 +10,8 @@ from newsbot.config import SpaceConfig
 from newsbot.db import Database
 from newsbot.space import (SpaceService, alert_key, due_reminders, launch_html,
                            parse_launch, parse_tle)
-from newsbot.webapp import start_web
+from newsbot.news.models import Article
+from newsbot.webapp import NewsProxy, start_web
 
 NOW = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
 
@@ -21,7 +22,9 @@ def raw_launch(**over):
         "net": "2026-09-20T12:25:00Z",
         "status": {"abbrev": "Go", "name": "Go for Launch"},
         "launch_service_provider": {"name": "SpaceX"},
-        "rocket": {"configuration": {"full_name": "Falcon 9 Block 5"}},
+        "rocket": {"configuration": {"full_name": "Falcon 9 Block 5",
+                   "length": 70.0, "leo_capacity": "22800", "reusable": True,
+                   "manufacturer": {"name": "SpaceX"}, "description": ""}},
         "mission": {"description": "Starlinks <b>", "orbit": {"name": "LEO"}},
         "pad": {"name": "SLC-40", "latitude": "28.56", "longitude": -80.57,
                 "location": {"name": "Cape Canaveral, FL"}},
@@ -50,6 +53,14 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(lnch.link, "https://youtube.com/watch?v=x")
         self.assertEqual(lnch.image, "https://img/x.jpg")
         self.assertTrue(lnch.net.endswith("Z"))
+
+    def test_rocket_facts_keep_only_what_exists(self):
+        info = parse_launch(raw_launch()).rocket_info
+        self.assertEqual(info["leo_capacity_kg"], 22800.0)
+        self.assertEqual(info["manufacturer"], "SpaceX")
+        self.assertIs(info["reusable"], True)
+        self.assertNotIn("description", info)
+        self.assertEqual(parse_launch(raw_launch(rocket={})).rocket_info, {})
 
     def test_launch_without_pad_or_time_is_dropped(self):
         self.assertIsNone(parse_launch(raw_launch(pad={})))
@@ -107,7 +118,31 @@ class ReminderTests(unittest.TestCase):
         asyncio.run(run())
 
 
+class FakeRSS:
+    def __init__(self):
+        self.calls = []
+
+    async def search(self, query, *, limit, lookback_hours):
+        self.calls.append(query)
+        return [Article(title=f"About {query}", url="https://ex.com/a",
+                        source="Ex")]
+
+
 class WebTests(unittest.TestCase):
+    def test_news_proxy_runs_on_the_loop_and_caches(self):
+        import threading
+        loop = asyncio.new_event_loop()
+        threading.Thread(target=loop.run_forever, daemon=True).start()
+        try:
+            rss = FakeRSS()
+            proxy = NewsProxy(loop, rss)
+            self.assertEqual(proxy.get("  Kenya ")[0]["title"], "About Kenya")
+            proxy.get("kenya")
+            self.assertEqual(rss.calls, ["Kenya"])      # second hit cached
+            self.assertEqual(proxy.get("   "), [])
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+
     def test_serves_snapshot_and_page_but_nothing_else(self):
         with tempfile.TemporaryDirectory() as tmp:
             space = SpaceService(SpaceConfig(), Path(tmp) / "cache.json")

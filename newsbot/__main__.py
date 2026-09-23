@@ -21,7 +21,7 @@ from .handlers import BotHandlers
 from .news import NewsFetcher
 from .scheduler import DigestScheduler
 from .space import SpaceService, send_launch_reminders
-from .webapp import start_web
+from .webapp import NewsProxy, start_web
 
 log = logging.getLogger("newsbot")
 
@@ -111,8 +111,9 @@ def build_application(cfg: Config) -> Application:
         scheduler.schedule_maintenance()
         if space is not None:
             schedule_space(app, db, space, cfg, globe_url)
+            news = NewsProxy(asyncio.get_running_loop(), fetcher.rss)
             web["server"] = start_web(space, cfg.space.web_host,
-                                      cfg.space.web_port)
+                                      cfg.space.web_port, news)
         try:
             await app.bot.set_my_commands(COMMANDS)
         except Exception as exc:  # noqa: BLE001

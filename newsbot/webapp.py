@@ -8,11 +8,14 @@ keeps - it never fetches anything itself.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 log = logging.getLogger(__name__)
 
@@ -28,7 +31,50 @@ STATIC_FILES = {
 }
 
 
-def make_handler(space):
+class NewsProxy:
+    """News for whatever was clicked on the globe.
+
+    Always Google News RSS, never GNews: clicking around the globe would burn
+    the 100-a-day GNews allowance the morning digests depend on. The search
+    runs on the bot's event loop (where the RSS client lives); this is called
+    from a web thread, so it hands the coroutine over and waits. Results are
+    cached, so spinning back to the same country costs nothing.
+    """
+
+    TTL = 900
+    LIMIT = 8
+
+    def __init__(self, loop, rss, lookback_hours: int = 72):
+        self.loop = loop
+        self.rss = rss
+        self.lookback_hours = lookback_hours
+        self._cache: dict[str, tuple[float, list]] = {}
+        self._lock = threading.Lock()
+
+    def get(self, query: str) -> list[dict]:
+        query = " ".join(query.split())[:120]
+        if not query or self.rss is None or self.loop is None:
+            return []
+        key = query.lower()
+        with self._lock:
+            hit = self._cache.get(key)
+            if hit and time.time() - hit[0] < self.TTL:
+                return hit[1]
+        coro = self.rss.search(query, limit=self.LIMIT,
+                               lookback_hours=self.lookback_hours)
+        articles = asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout=25)
+        items = [{
+            "title": a.title, "url": a.url, "source": a.source,
+            "published": a.published_at.isoformat() if a.published_at else "",
+        } for a in articles]
+        with self._lock:
+            if len(self._cache) > 300:
+                self._cache.clear()
+            self._cache[key] = (time.time(), items)
+        return items
+
+
+def make_handler(space, news: NewsProxy | None = None):
     class Handler(BaseHTTPRequestHandler):
         server_version = "newsbot-globe"
 
@@ -38,6 +84,17 @@ def make_handler(space):
                 return self._send(200, space.launches_json, "application/json")
             if path == "/api/satellites":
                 return self._send(200, space.sats_json, "application/json")
+            if path == "/api/news":
+                query = (parse_qs(urlsplit(self.path).query).get("q") or [""])[0]
+                try:
+                    items = news.get(query) if news else []
+                except Exception as exc:  # noqa: BLE001 - a news hiccup is a 502, not a crash
+                    log.warning("Globe news for %r failed: %s: %s", query,
+                                type(exc).__name__, exc)
+                    return self._send(502, b'{"items": [], "error": "news unavailable"}',
+                                      "application/json")
+                body = json.dumps({"query": query, "items": items}).encode()
+                return self._send(200, body, "application/json")
             if path == "/api/health":
                 return self._send(200, b'{"ok": true}', "application/json")
             entry = STATIC_FILES.get(path)
@@ -67,11 +124,12 @@ def make_handler(space):
     return Handler
 
 
-def start_web(space, host: str, port: int) -> ThreadingHTTPServer | None:
+def start_web(space, host: str, port: int,
+              news: NewsProxy | None = None) -> ThreadingHTTPServer | None:
     """Start serving; returns None (and the bot carries on) if the port is
     taken, rather than taking the whole bot down over the globe."""
     try:
-        server = ThreadingHTTPServer((host, port), make_handler(space))
+        server = ThreadingHTTPServer((host, port), make_handler(space, news))
     except OSError as exc:
         log.error("Globe web app could not start on %s:%s (%s: %s)", host, port,
                   type(exc).__name__, exc)
