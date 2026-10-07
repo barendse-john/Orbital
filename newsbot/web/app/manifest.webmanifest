@@ -4,7 +4,7 @@
   "description": "Rocket launches, satellites and your news briefing.",
   "id": "/app/",
   "start_url": "/app/",
-  "scope": "/app/",
+  "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#050302",
