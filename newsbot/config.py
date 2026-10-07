@@ -143,12 +143,30 @@ class SpaceConfig:
 
 
 @dataclass
+class ReportsConfig:
+    # Markdown reports (the Kalulu morning briefing) relayed from a Google
+    # Drive folder to Telegram. Off by itself until a folder id is set.
+    enabled: bool = True
+    folder_id: str = ""
+    service_account_file: str = "./data/google-service-account.json"
+    # Who gets them. Empty = the bot's owner (not every admin).
+    chat_ids: list[int] = field(default_factory=list)
+    poll_minutes: int = 15
+    # Older than this when first seen = recorded, not sent, so a fresh
+    # install or a long outage doesn't open with a flood of stale reports.
+    max_age_hours: int = 36
+    attach_file: bool = False
+    archive_dir: str = ""       # empty = <database folder>/reports
+
+
+@dataclass
 class Config:
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     ai: AIConfig = field(default_factory=AIConfig)
     news: NewsConfig = field(default_factory=NewsConfig)
     digest: DigestConfig = field(default_factory=DigestConfig)
     space: SpaceConfig = field(default_factory=SpaceConfig)
+    reports: ReportsConfig = field(default_factory=ReportsConfig)
     database_path: Path = Path("./data/newsbot.db")
     log_level: str = "INFO"
 
@@ -239,6 +257,7 @@ class Config:
                     sp.get("max_satellites_per_group")
                     or sp_defaults.max_satellites_per_group),
             ),
+            reports=_reports_cfg(raw.get("reports") or {}),
             database_path=Path(str(db.get("path") or "./data/newsbot.db")),
             log_level=str(raw.get("log_level") or "INFO").upper(),
         )
@@ -270,6 +289,25 @@ class Config:
                 "bot becomes its owner automatically. Message it now if "
                 "that should be you."
             )
+
+
+def _reports_cfg(raw: dict) -> ReportsConfig:
+    """The folder and key can come from .env alone (the names the standalone
+    briefing_relay.py used), so no config.yaml section is needed."""
+    d = ReportsConfig()
+    return ReportsConfig(
+        enabled=bool(raw.get("enabled", d.enabled)),
+        folder_id=str(raw.get("folder_id")
+                      or os.environ.get("GDRIVE_REPORTS_FOLDER_ID") or "").strip(),
+        service_account_file=str(raw.get("service_account_file")
+                                 or os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+                                 or d.service_account_file),
+        chat_ids=[int(x) for x in (raw.get("chat_ids") or [])],
+        poll_minutes=max(5, int(raw.get("poll_minutes") or d.poll_minutes)),
+        max_age_hours=int(raw.get("max_age_hours") or d.max_age_hours),
+        attach_file=bool(raw.get("attach_file", d.attach_file)),
+        archive_dir=str(raw.get("archive_dir") or ""),
+    )
 
 
 def _engine_cfg(raw: dict) -> EngineConfig:

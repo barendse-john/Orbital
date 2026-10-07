@@ -22,6 +22,7 @@ news source and the model you choose.
 | **Friends ask, you tap** | A stranger who messages the bot gets turned away politely, and you get their name, username and first message with Approve / Deny buttons. One person, one request, however many times they message. `/requests` shows the history. |
 | **Never repeats itself** | An article you've already been sent won't come back, even if a different source or a second topic turns it up. |
 | **Two news sources** | GNews API while the free 100/day allowance lasts, then Google News RSS - free, unlimited, no key. |
+| **Reports from Drive** | Markdown reports dropped into a Google Drive folder (the Kalulu morning briefing) arrive in Telegram within 15 minutes, formatted and split to fit. |
 | **Two AI backends** | Anthropic (cheap, fast) or a local Ollama model (free, slower). One line in `config.yaml`. |
 
 ---
@@ -319,6 +320,7 @@ newsbot/
 ├── digest.py        building and sending digests
 ├── scheduler.py     one daily job per user, in their timezone
 ├── formatting.py    Telegram HTML, message splitting
+├── reports.py       Drive folder -> Telegram relay for markdown reports
 ├── timezones.py     coordinates -> IANA zone, offline
 ├── ai/              anthropic | ollama, behind one interface
 └── news/            gnews | rss, behind one fetcher
@@ -349,6 +351,12 @@ Type a city name instead, or use `/timezone Europe/Amsterdam`.
 
 **`timezonefinder` won't install** - skip it. The bot detects its absence and
 asks for a city name instead; nothing else changes.
+
+**No report arrived** - run `python -m newsbot --check`: the `reports` line
+names the problem (key file missing, folder not shared with the service
+account, google-auth not installed). Then
+`journalctl -u newsbot -e | grep -i report`. A 404 from Drive almost always
+means the folder isn't shared with the service account's email.
 
 **Summaries look like raw blurbs** - the model call failed and the bot fell
 back. Check the logs for the reason (bad key, rate limit, Ollama not running).
@@ -429,6 +437,62 @@ sudo tailscale funnel --bg --https=8443 --set-path=/calendar.ics http://127.0.0.
 
 then add `https://<pi-name>.<tailnet>.ts.net:8443/calendar.ics` in Google
 Calendar → Other calendars → From URL. Google refreshes it every few hours.
+
+## Reports from Google Drive
+
+Every morning a cloud routine saves a briefing (the Kalulu morning briefing)
+as a `.md` file in a Google Drive folder. The bot checks that folder every 15
+minutes, keeps a copy of anything new in `data/reports/`, and sends it to you
+on Telegram. Long reports are split to fit Telegram's 4,096-character limit,
+and if Telegram ever rejects the formatting that part is resent as plain text,
+so a report is never dropped. This replaces the standalone
+`briefing_relay.py` + cron setup: same bot token, no second process.
+
+Only the bot's owner receives reports (friends you've made admins don't).
+To send them somewhere else, list chat ids under `reports.chat_ids`.
+
+**1. Give the Pi read access to Drive** (one time, ~10 minutes). The Pi uses
+a *service account*: a Google identity with no browser login, which suits a
+headless Pi.
+
+1. At <https://console.cloud.google.com/>, create a project (e.g. `kalulu-relay`).
+2. **APIs & Services → Library** → enable **Google Drive API**.
+3. **IAM & Admin → Service Accounts → Create**, name it `pi-relay`, skip the roles.
+4. Open it → **Keys → Add key → JSON**. Copy the download to the Pi as
+   `~/Documents/news_bot/data/google-service-account.json` and
+   `chmod 600` it. (`data/` is git-ignored; `backup.sh` includes the key.)
+5. Copy the account's email (`pi-relay@…iam.gserviceaccount.com`). In Drive,
+   right-click the **Reports** folder → **Share** → paste it → **Viewer**.
+   It can see that folder and nothing else.
+
+**2. Point the bot at the folder.** In `.env`, set the folder id - the long
+string at the end of the folder's URL:
+
+```
+GDRIVE_REPORTS_FOLDER_ID=1AbC...
+```
+
+**3. Install and check:**
+
+```bash
+./.venv/bin/pip install -r requirements.txt     # adds google-auth
+./.venv/bin/python -m newsbot --check           # "reports  OK (N in the Drive folder; sent to <id>)"
+sudo systemctl restart newsbot
+```
+
+About a minute after the restart, today's report arrives if there is one.
+Reports that were already more than 36 hours old the first time the bot sees
+them are recorded but not sent (`reports.max_age_hours`), so switching this on
+doesn't flood the chat with last month's briefings.
+
+**If you ran the standalone relay from cron**, remove that `crontab -e` line,
+or each report arrives twice.
+
+To resend a report, delete its row and wait for the next check:
+
+```bash
+sqlite3 data/newsbot.db "delete from report_deliveries where name like '2026-10-08%'"
+```
 
 ## How news is chosen
 

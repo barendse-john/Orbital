@@ -151,6 +151,18 @@ CREATE TABLE IF NOT EXISTS briefings (
     items      TEXT NOT NULL
 );
 
+-- Reports relayed from Google Drive: one row per report and recipient, so a
+-- restart or an overlapping poll can't send one twice. 'skipped' means it was
+-- already old when first seen and was recorded without sending.
+CREATE TABLE IF NOT EXISTS report_deliveries (
+    file_id TEXT NOT NULL,
+    chat_id INTEGER NOT NULL,
+    name    TEXT,
+    status  TEXT NOT NULL DEFAULT 'sent',
+    at      TEXT NOT NULL,
+    PRIMARY KEY (file_id, chat_id)
+);
+
 CREATE TABLE IF NOT EXISTS admin_users (
     user_id  INTEGER PRIMARY KEY,
     added_by INTEGER,
@@ -823,6 +835,39 @@ class Database:
             self._write, "DELETE FROM launch_alerts_sent WHERE sent_at < ?",
             (cutoff,))
         return cur.rowcount
+
+    # ----------------------------------------------------------- reports
+
+    async def owner_ids(self) -> set[int]:
+        """Admins nobody added: whoever claimed the bot first."""
+        rows = await asyncio.to_thread(
+            self._read,
+            "SELECT user_id FROM admin_users WHERE added_by IS NULL", ())
+        return {r["user_id"] for r in rows}
+
+    async def report_deliveries(self) -> set[tuple[str, int]]:
+        """Every (file_id, chat_id) already sent or skipped. One row a day
+        per recipient, so reading the lot stays cheap for years."""
+        rows = await asyncio.to_thread(
+            self._read, "SELECT file_id, chat_id FROM report_deliveries", ())
+        return {(r["file_id"], r["chat_id"]) for r in rows}
+
+    async def claim_report(self, file_id: str, chat_id: int, name: str,
+                           status: str = "sent") -> bool:
+        """True exactly once per (report, recipient); send only then."""
+        cur = await asyncio.to_thread(
+            self._write,
+            "INSERT OR IGNORE INTO report_deliveries (file_id, chat_id, name, "
+            "status, at) VALUES (?, ?, ?, ?, ?)",
+            (file_id, chat_id, name, status, _utcnow()))
+        return cur.rowcount == 1
+
+    async def release_report(self, file_id: str, chat_id: int) -> None:
+        """Undo a claim whose send failed, so the next poll tries again."""
+        await asyncio.to_thread(
+            self._write,
+            "DELETE FROM report_deliveries WHERE file_id = ? AND chat_id = ?",
+            (file_id, chat_id))
 
     # -------------------------------------------------------------- app
 

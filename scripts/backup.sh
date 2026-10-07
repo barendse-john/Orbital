@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Snapshots the three things git doesn't track: your API keys, your config,
-# and the database (topics, timezone, digest time, sent-article history).
+# Snapshots the things git doesn't track: your API keys, your config, the
+# database (topics, timezone, digest time, sent-article history) and, if you
+# use reports from Drive, the Google service account key.
 #
 #   ./scripts/backup.sh                  -> ~/newsbot-backups/
 #   ./scripts/backup.sh /mnt/usb         -> somewhere else
@@ -23,6 +24,8 @@ trap 'rm -rf "$STAGE"' EXIT
 for f in .env config.yaml; do
     [ -f "$f" ] && cp "$f" "$STAGE/" || echo "note: no $f to back up"
 done
+KEY="data/google-service-account.json"
+[ -f "$KEY" ] && cp "$KEY" "$STAGE/" || true
 
 # The bot writes to the database continuously, and it runs in WAL mode, so
 # copying the file directly can capture a torn state. sqlite3's backup API

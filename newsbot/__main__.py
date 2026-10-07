@@ -14,6 +14,7 @@ from telegram.ext import Application, ApplicationBuilder
 from telegram.request import HTTPXRequest
 
 from .ai import build_backend
+from .ai.base import describe
 from .config import Config, ConfigError
 from .db import Database
 from .digest import DigestService
@@ -24,6 +25,7 @@ from .space import SpaceService, send_launch_reminders
 from .appservice import AppService
 from .engine import NewsEngine
 from .push import Pusher
+from .reports import DriveError, ReportRelay, build_relay
 from .webapp import Ctx, NewsProxy, start_web
 
 log = logging.getLogger("newsbot")
@@ -110,6 +112,9 @@ def build_application(cfg: Config) -> Application:
         digest.engine = engine
         if appsvc is not None:
             appsvc.engine = engine
+    relay, why_not = build_relay(cfg, db)
+    if relay is None and cfg.reports.folder_id:
+        log.warning("Reports from Drive are off: %s", why_not)
     web = {}
 
     async def post_init(app: Application) -> None:
@@ -137,6 +142,8 @@ def build_application(cfg: Config) -> Application:
             app.job_queue.run_repeating(
                 engine_job, interval=cfg.news.engine.collect_every_minutes * 60,
                 first=90, name="news-engine")
+        if relay is not None:
+            schedule_reports(app, relay, cfg.reports.poll_minutes)
         me = await app.bot.get_me()
         if space is not None:
             schedule_space(app, db, space, cfg, globe_url, appsvc)
@@ -159,6 +166,8 @@ def build_application(cfg: Config) -> Application:
             await space.close()
         if engine is not None:
             await engine.close()
+        if relay is not None:
+            await relay.close()
         await fetcher.close()
         await ai.close()
         db.close()
@@ -228,6 +237,25 @@ def schedule_space(app: Application, db: Database, space: SpaceService,
     jq.run_repeating(prune_job, interval=86400, first=3600, name="space-prune")
 
 
+def schedule_reports(app: Application, relay: ReportRelay, minutes: int) -> None:
+    """Poll the Drive folder. The first check is a minute after start, so a
+    deploy delivers a report that is waiting rather than sitting on it."""
+
+    async def reports_job(ctx) -> None:
+        try:
+            sent = await relay.poll(ctx.bot)
+            if sent:
+                log.info("Delivered %d report(s) from Drive", sent)
+        except DriveError as exc:
+            log.warning("Report check failed: %s", exc)
+        except Exception:  # noqa: BLE001 - a bad poll must not unschedule the job
+            log.exception("Report check failed")
+
+    app.job_queue.run_repeating(reports_job, interval=minutes * 60, first=60,
+                                name="reports")
+    log.info("Reports from Drive: checking every %d min", minutes)
+
+
 async def _check(cfg: Config) -> int:
     """Validate the setup without starting the bot."""
     ok = True
@@ -260,6 +288,26 @@ async def _check(cfg: Config) -> int:
                   f"({count} satellites via CelesTrak)")
             await space.close()
         print(f"  globe      {globe_url_for(cfg)}")
+
+    if cfg.reports.enabled and cfg.reports.folder_id:
+        relay, why_not = build_relay(cfg, db)
+        if relay is None:
+            print(f"  reports    FAIL ({why_not})")
+            ok = False
+        else:
+            try:
+                found = await relay.drive.list_reports(cfg.reports.folder_id)
+                to = await relay.recipients()
+                print(f"  reports    OK  ({len(found)} in the Drive folder; "
+                      f"sent to {', '.join(map(str, to)) or 'nobody yet'})")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  reports    FAIL ({describe(exc)})")
+                ok = False
+            await relay.close()
+    else:
+        print("  reports    off ("
+              + ("no GDRIVE_REPORTS_FOLDER_ID" if cfg.reports.enabled
+                 else "reports.enabled is false") + ")")
 
     app = ApplicationBuilder().token(cfg.telegram.token).build()
     try:

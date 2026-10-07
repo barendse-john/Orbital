@@ -11,3 +11,7 @@ timezonefinder>=6.5.0
 
 # Phone app notifications (optional: without it the app works, silently)
 pywebpush>=2.0.0
+
+# Reports from Google Drive (optional: signs the service account's token
+# request; without it the Drive relay stays off and nothing else changes)
+google-auth>=2.20
