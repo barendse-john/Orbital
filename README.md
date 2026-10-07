@@ -22,7 +22,7 @@ news source and the model you choose.
 | **Friends ask, you tap** | A stranger who messages the bot gets turned away politely, and you get their name, username and first message with Approve / Deny buttons. One person, one request, however many times they message. `/requests` shows the history. |
 | **Never repeats itself** | An article you've already been sent won't come back, even if a different source or a second topic turns it up. |
 | **Two news sources** | GNews API while the free 100/day allowance lasts, then Google News RSS - free, unlimited, no key. |
-| **Reports from Drive** | Markdown reports dropped into a Google Drive folder (the Kalulu morning briefing) arrive in Telegram within 15 minutes, formatted and split to fit. |
+| **Reports from Drive** | Markdown reports dropped into a Google Drive folder (the Kalulu morning briefing) appear in the Orbital app's Reports tab within 15 minutes, with a notification. |
 | **Two AI backends** | Anthropic (cheap, fast) or a local Ollama model (free, slower). One line in `config.yaml`. |
 
 ---
@@ -320,7 +320,7 @@ newsbot/
 ├── digest.py        building and sending digests
 ├── scheduler.py     one daily job per user, in their timezone
 ├── formatting.py    Telegram HTML, message splitting
-├── reports.py       Drive folder -> Telegram relay for markdown reports
+├── reports.py       Drive folder -> the app's Reports tab and notifications
 ├── timezones.py     coordinates -> IANA zone, offline
 ├── ai/              anthropic | ollama, behind one interface
 └── news/            gnews | rss, behind one fetcher
@@ -442,14 +442,16 @@ Calendar → Other calendars → From URL. Google refreshes it every few hours.
 
 Every morning a cloud routine saves a briefing (the Kalulu morning briefing)
 as a `.md` file in a Google Drive folder. The bot checks that folder every 15
-minutes, keeps a copy of anything new in `data/reports/`, and sends it to you
-on Telegram. Long reports are split to fit Telegram's 4,096-character limit,
-and if Telegram ever rejects the formatting that part is resent as plain text,
-so a report is never dropped. This replaces the standalone
-`briefing_relay.py` + cron setup: same bot token, no second process.
+minutes and puts anything new in the **Reports** tab of the Orbital app, with
+a phone notification that opens straight to it (switch it off under
+Settings → Reports). Nothing goes to Telegram. A copy of each report is also
+kept in `data/reports/`. This replaces the standalone `briefing_relay.py` +
+cron setup.
 
-Only the bot's owner receives reports (friends you've made admins don't).
-To send them somewhere else, list chat ids under `reports.chat_ids`.
+Only the bot's owner sees the Reports tab (friends you've made admins
+don't). To let others read them, list their Telegram user ids under
+`reports.chat_ids`. The first time it runs, the tab is filled with the last
+two weeks of reports from the folder.
 
 **1. Give the Pi read access to Drive** (one time, ~10 minutes). The Pi uses
 a *service account*: a Google identity with no browser login, which suits a
@@ -476,23 +478,16 @@ GDRIVE_REPORTS_FOLDER_ID=1AbC...
 
 ```bash
 ./.venv/bin/pip install -r requirements.txt     # adds google-auth
-./.venv/bin/python -m newsbot --check           # "reports  OK (N in the Drive folder; sent to <id>)"
+./.venv/bin/python -m newsbot --check           # "reports  OK (N in the Drive folder; shown in the app to <id>)"
 sudo systemctl restart newsbot
 ```
 
-About a minute after the restart, today's report arrives if there is one.
-Reports that were already more than 36 hours old the first time the bot sees
-them are recorded but not sent (`reports.max_age_hours`), so switching this on
-doesn't flood the chat with last month's briefings.
+About a minute after the restart the Reports tab fills up. Only reports less
+than 36 hours old ring the phone (`reports.max_age_hours`), so switching this
+on doesn't set off a notification for every old briefing.
 
 **If you ran the standalone relay from cron**, remove that `crontab -e` line,
-or each report arrives twice.
-
-To resend a report, delete its row and wait for the next check:
-
-```bash
-sqlite3 data/newsbot.db "delete from report_deliveries where name like '2026-10-08%'"
-```
+or reports keep arriving on Telegram too.
 
 ## How news is chosen
 

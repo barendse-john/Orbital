@@ -93,20 +93,20 @@ space:
   max_satellites_per_group: 2000
 
 reports:
-  # Markdown reports (e.g. the Kalulu morning briefing) relayed from a Google
-  # Drive folder to Telegram. Setup: README, "Reports from Google Drive".
+  # Markdown reports (e.g. the Kalulu morning briefing) from a Google Drive
+  # folder, read in the Orbital app's Reports tab with a phone notification
+  # when one lands. Setup: README, "Reports from Google Drive".
   # Stays off until GDRIVE_REPORTS_FOLDER_ID is set in .env.
   enabled: true
   folder_id: ${GDRIVE_REPORTS_FOLDER_ID}
   service_account_file: ./data/google-service-account.json
-  # Who gets them. Empty = the bot's owner (friends you made admin don't).
+  # Telegram user ids who can read them in the app. Empty = the bot's owner
+  # (friends you made admin don't).
   chat_ids: []
   poll_minutes: 15
-  # Reports already older than this when first seen are recorded but not
-  # sent, so a fresh install doesn't open with a pile of old briefings.
+  # Reports already older than this when first seen are listed in the app
+  # without a notification, so a fresh install doesn't ring for old ones.
   max_age_hours: 36
-  # Also send the .md file itself - handy for saving it on the phone.
-  attach_file: false
 
 database:
   path: ./data/newsbot.db

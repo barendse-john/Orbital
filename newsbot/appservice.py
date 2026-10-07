@@ -18,6 +18,8 @@ import time
 from datetime import datetime, timezone
 
 from .brain import plan_topic, plain_query, query_is_sane
+from .reports import (md_to_html_blocks, report_preview, report_summary,
+                      report_title)
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +42,7 @@ class AppService:
         self.globe_url = globe_url
         self.scheduler = None            # attached once the bot is running
         self.engine = None               # NewsEngine, attached in __main__
+        self.relay = None                # ReportRelay, attached in __main__
         self._last_refresh: dict[int, float] = {}
 
     # ---------------------------------------------------------- pairing
@@ -69,6 +72,7 @@ class AppService:
             "digest_time": user.digest_time if user else None,
             "digest_enabled": bool(user and user.digest_enabled),
             "launch_alerts": await self.db.launch_alerts_enabled(user_id),
+            "reports": await self.can_read_reports(user_id),
             "prefs": await self.db.app_prefs(user_id),
             "push_devices": len(await self.db.push_subs(user_id)),
             "topics": [t.label for t in topics],
@@ -91,7 +95,7 @@ class AppService:
                 await self.db.set_digest_time(user_id, f"{int(h):02d}:{m}")
                 await self._reschedule(user_id)
             elif key in ("digest_telegram", "digest_push", "launch_telegram",
-                         "launch_push", "breaking_push"):
+                         "launch_push", "breaking_push", "report_push"):
                 await self.db.set_app_pref(user_id, key, bool(value))
             else:
                 raise AppError(f"Unknown setting {key!r}.")
@@ -169,6 +173,37 @@ class AppService:
                     parse_mode="HTML", disable_web_page_preview=True)
             except Exception as exc:  # noqa: BLE001
                 log.warning("Breaking news to %s on Telegram failed: %s", user_id, exc)
+
+    # -------------------------------------------------------- reports
+
+    async def can_read_reports(self, user_id: int) -> bool:
+        """Only whoever the relay sends reports to - the owner by default."""
+        return self.relay is not None and user_id in await self.relay.recipients()
+
+    async def _require_reports(self, user_id: int) -> None:
+        if not await self.can_read_reports(user_id):
+            raise AppError("Reports aren't shared with you.", 403)
+
+    async def reports(self, user_id: int) -> list[dict]:
+        await self._require_reports(user_id)
+        return [report_summary(r) for r in await self.db.list_reports()]
+
+    async def report(self, user_id: int, file_id: str) -> dict:
+        """One report as HTML paragraphs in a small escaped subset (b, i,
+        code, http(s) links), so the app needn't parse markdown itself."""
+        await self._require_reports(user_id)
+        row = await self.db.get_report(file_id)
+        if row is None:
+            raise AppError("No such report.", 404)
+        return report_summary(row) | {"blocks": md_to_html_blocks(row["body"])}
+
+    async def report_push(self, user_id: int, file_id: str, text: str) -> bool:
+        if not (await self.db.app_prefs(user_id)).get("report_push", True):
+            return False
+        return bool(await self.push(user_id, {
+            "title": f"📋 {report_title(text)}",
+            "body": report_preview(text, 120),
+            "url": f"/app/#report={file_id}", "tag": f"report-{file_id[:40]}"}))
 
     # --------------------------------------------------------- topics
 

@@ -18,7 +18,8 @@ self.addEventListener("fetch", (e) => {
   const url = new URL(req.url);
   if (req.method !== "GET" || url.origin !== location.origin) return;
   const cacheable = url.pathname.startsWith("/app") || url.pathname === "/api/launches"
-    || url.pathname === "/api/me" || url.pathname === "/api/me/briefing";
+    || url.pathname === "/api/me" || url.pathname === "/api/me/briefing"
+    || url.pathname.startsWith("/api/me/reports");
   if (!cacheable) return;
   e.respondWith(fetch(req).then((res) => {
     if (res.ok) {

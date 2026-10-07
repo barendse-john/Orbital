@@ -144,18 +144,18 @@ class SpaceConfig:
 
 @dataclass
 class ReportsConfig:
-    # Markdown reports (the Kalulu morning briefing) relayed from a Google
-    # Drive folder to Telegram. Off by itself until a folder id is set.
+    # Markdown reports (the Kalulu morning briefing) from a Google Drive
+    # folder, read in the Orbital app. Off by itself until a folder id is set.
     enabled: bool = True
     folder_id: str = ""
     service_account_file: str = "./data/google-service-account.json"
-    # Who gets them. Empty = the bot's owner (not every admin).
+    # Telegram user ids who may read them in the app and get notified.
+    # Empty = the bot's owner (not every admin).
     chat_ids: list[int] = field(default_factory=list)
     poll_minutes: int = 15
-    # Older than this when first seen = recorded, not sent, so a fresh
-    # install or a long outage doesn't open with a flood of stale reports.
+    # Older than this when first seen = listed in the app without a
+    # notification, so a fresh install doesn't ring the phone for old ones.
     max_age_hours: int = 36
-    attach_file: bool = False
     archive_dir: str = ""       # empty = <database folder>/reports
 
 
@@ -305,7 +305,6 @@ def _reports_cfg(raw: dict) -> ReportsConfig:
         chat_ids=[int(x) for x in (raw.get("chat_ids") or [])],
         poll_minutes=max(5, int(raw.get("poll_minutes") or d.poll_minutes)),
         max_age_hours=int(raw.get("max_age_hours") or d.max_age_hours),
-        attach_file=bool(raw.get("attach_file", d.attach_file)),
         archive_dir=str(raw.get("archive_dir") or ""),
     )
 

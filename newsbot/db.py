@@ -151,9 +151,9 @@ CREATE TABLE IF NOT EXISTS briefings (
     items      TEXT NOT NULL
 );
 
--- Reports relayed from Google Drive: one row per report and recipient, so a
--- restart or an overlapping poll can't send one twice. 'skipped' means it was
--- already old when first seen and was recorded without sending.
+-- Reports from Google Drive: one row per report and reader, so a restart or
+-- an overlapping poll can't notify twice. 'skipped' means it was already old
+-- when first seen and was listed in the app without a notification.
 CREATE TABLE IF NOT EXISTS report_deliveries (
     file_id TEXT NOT NULL,
     chat_id INTEGER NOT NULL,
@@ -161,6 +161,14 @@ CREATE TABLE IF NOT EXISTS report_deliveries (
     status  TEXT NOT NULL DEFAULT 'sent',
     at      TEXT NOT NULL,
     PRIMARY KEY (file_id, chat_id)
+);
+
+-- The text of each report from Drive, for the app's Reports tab.
+CREATE TABLE IF NOT EXISTS reports (
+    file_id    TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    body       TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS admin_users (
@@ -227,6 +235,7 @@ class Database:
             ("pending_topics", "asked", "INTEGER NOT NULL DEFAULT 1"),
             ("pending_topics", "transcript", "TEXT NOT NULL DEFAULT '[]'"),
             ("app_prefs", "breaking_push", "INTEGER NOT NULL DEFAULT 1"),
+            ("app_prefs", "report_push", "INTEGER NOT NULL DEFAULT 1"),
         ]
         for table, column, decl in added:
             try:
@@ -869,6 +878,31 @@ class Database:
             "DELETE FROM report_deliveries WHERE file_id = ? AND chat_id = ?",
             (file_id, chat_id))
 
+    async def report_ids(self) -> set[str]:
+        rows = await asyncio.to_thread(
+            self._read, "SELECT file_id FROM reports", ())
+        return {r["file_id"] for r in rows}
+
+    async def save_report(self, file_id: str, name: str, created_at: str,
+                          body: str) -> None:
+        await asyncio.to_thread(
+            self._write,
+            "INSERT OR REPLACE INTO reports (file_id, name, created_at, body) "
+            "VALUES (?, ?, ?, ?)", (file_id, name, created_at, body))
+
+    async def get_report(self, file_id: str) -> dict | None:
+        rows = await asyncio.to_thread(
+            self._read, "SELECT file_id, name, created_at, body FROM reports "
+            "WHERE file_id = ?", (file_id,))
+        return dict(rows[0]) if rows else None
+
+    async def list_reports(self, limit: int = 60) -> list[dict]:
+        """Newest first. created_at is ISO UTC, so text order is time order."""
+        rows = await asyncio.to_thread(
+            self._read, "SELECT file_id, name, created_at, body FROM reports "
+            "ORDER BY created_at DESC LIMIT ?", (limit,))
+        return [dict(r) for r in rows]
+
     # -------------------------------------------------------------- app
 
     async def create_app_token(self, user_id: int, token: str) -> None:
@@ -899,11 +933,12 @@ class Database:
         if rows:
             return {k: bool(rows[0][k]) for k in rows[0].keys() if k != "user_id"}
         return {"digest_telegram": True, "digest_push": True,
-                "launch_telegram": True, "launch_push": True, "breaking_push": True}
+                "launch_telegram": True, "launch_push": True, "breaking_push": True,
+                "report_push": True}
 
     async def set_app_pref(self, user_id: int, key: str, value: bool) -> None:
         if key not in ("digest_telegram", "digest_push", "launch_telegram",
-                       "launch_push", "breaking_push"):
+                       "launch_push", "breaking_push", "report_push"):
             raise ValueError(key)
         await asyncio.to_thread(
             self._write, "INSERT OR IGNORE INTO app_prefs (user_id) VALUES (?)",

@@ -256,6 +256,11 @@ def make_handler(space, news: NewsProxy | None = None, ctx: Ctx | None = None):
             if path == "/api/me/vote" and method == "POST":
                 body = self._body()
                 return self._json(200, run(app.vote(uid, body.get("key", ""), body.get("vote"))))
+            if path == "/api/me/reports" and method == "GET":
+                return self._json(200, {"reports": run(app.reports(uid))})
+            m = re.fullmatch(r"/api/me/reports/([\w-]+)", path)
+            if m and method == "GET":
+                return self._json(200, run(app.report(uid, m.group(1))))
             if path == "/api/me/push/test" and method == "POST":
                 return self._json(200, run(app.test_push(uid)))
             return self._json(404, {"error": "Not found"})

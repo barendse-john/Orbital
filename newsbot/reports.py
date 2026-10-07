@@ -1,10 +1,10 @@
-"""Reports from a Google Drive folder, relayed to Telegram.
+"""Reports from a Google Drive folder, shown in the Orbital app.
 
 A cloud routine writes a markdown report (the Kalulu morning briefing) into a
-Drive folder every morning. This polls that folder, keeps a copy of each new
-report under data/reports/, and sends it to the owner on Telegram: split to
-fit Telegram's 4,096-character limit, as HTML first and as plain text if
-Telegram rejects the formatting, so a report is never dropped.
+Drive folder every morning. This polls that folder, keeps each new report in
+the database (the app's Reports tab reads it from there) and under
+data/reports/, and sends a phone notification to whoever reads reports - the
+bot's owner by default. Nothing goes to Telegram: John reads these in the app.
 
 Drive is read with a service account, a Google identity with no browser
 login, which suits a headless Pi. Its scope is drive.readonly and it sees only
@@ -15,14 +15,13 @@ token request and the two Drive calls go over plain httpx. google-auth is
 optional. Without it, a key file or a folder id the feature switches itself
 off with one log line and the rest of the bot carries on.
 
-Ported from John's standalone briefing_relay.py, which ran from cron with its
-own JSON state file. Delivery state now lives in SQLite, per report and per
-recipient, so a restart or an overlapping poll can't send a report twice.
+Ported from John's standalone briefing_relay.py (cron, its own JSON state,
+Telegram messages). Notification state now lives in SQLite, per report and
+per reader, so a restart or an overlapping poll can't notify twice.
 """
 
 from __future__ import annotations
 
-import asyncio
 import html
 import json
 import logging
@@ -34,10 +33,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 import httpx
-from telegram.error import BadRequest, Forbidden
 
 from .ai.base import describe
-from .formatting import TELEGRAM_LIMIT, chunk
 
 if TYPE_CHECKING:
     from .config import Config, ReportsConfig
@@ -49,6 +46,9 @@ SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 DRIVE_FILES = "https://www.googleapis.com/drive/v3/files"
 DEFAULT_TOKEN_URI = "https://oauth2.googleapis.com/token"
 JWT_GRANT = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+# How far back the app's Reports tab is filled the first time, on top of
+# max_age_hours. Older reports stay in Drive only.
+BACKFILL_DAYS = 14
 
 
 class DriveError(RuntimeError):
@@ -56,10 +56,9 @@ class DriveError(RuntimeError):
 
 
 # ------------------------------------------------------- markdown -> HTML ----
-# Telegram's HTML mode supports <b> <i> <u> <s> <a> <code> <pre> <blockquote>.
-# The reports use a small markdown subset, so a line-by-line converter is
-# enough, and it keeps every tag inside one line. That matters: chunk() splits
-# on line boundaries, so a split can never leave a tag open.
+# The app shows a report as HTML paragraphs in a small, fully escaped subset:
+# <b> <i> <code> and http(s) links. The reports use a small markdown subset,
+# so a line-by-line converter is enough, and every tag closes on its line.
 
 _LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
@@ -120,15 +119,44 @@ def md_to_html_blocks(md: str) -> list[str]:
     return blocks
 
 
-def report_messages(md: str) -> list[str]:
-    """A whole report as Telegram-sized HTML messages; [] if it is blank."""
-    blocks = md_to_html_blocks(md)
-    return chunk("\n\n".join(blocks)) if blocks else []
+def _plain(md_line: str) -> str:
+    """One markdown line as bare text, for titles and previews."""
+    text = _LINK.sub(r"\1", md_line.strip())
+    text = re.sub(r"^(#{1,6}|[-*+]|>)\s+", "", text)
+    return re.sub(r"[*_`]+", "", text).strip()
 
 
-def html_to_plain(text: str) -> str:
-    text = re.sub(r'<a href="([^"]+)">([^<]+)</a>', r"\2 (\1)", text)
-    return html.unescape(re.sub(r"</?[a-z]+[^>]*>", "", text))
+def report_title(md: str, name: str = "") -> str:
+    """The first heading, else the file name without .md."""
+    for line in md.splitlines():
+        if re.match(r"^\s*#{1,6}\s+\S", line):
+            return _plain(line)[:120]
+    return re.sub(r"\.md$", "", name, flags=re.I).replace("_", " ") or "Report"
+
+
+def report_preview(md: str, limit: int = 160) -> str:
+    """The first lines of body text, for a list entry or a notification."""
+    words: list[str] = []
+    for line in md.splitlines():
+        if not line.strip() or re.match(r"^\s*(#{1,6}\s|-{3,}|\*{3,}|_{3,})", line):
+            continue
+        words.append(_plain(line))
+        if sum(len(w) for w in words) > limit:
+            break
+    text = " · ".join(w for w in words if w)
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def report_summary(row: dict) -> dict:
+    """What the app's list shows for one stored report."""
+    return {"id": row["file_id"], "name": row["name"], "created": row["created_at"],
+            "title": report_title(row["body"], row["name"]),
+            "preview": report_preview(row["body"])}
+
+
+def _safe_name(name: str) -> str:
+    return re.sub(r"[^\w.\- ]", "_", Path(name).name).strip(" .") or "report.md"
+
 
 
 # ------------------------------------------------------------------ drive ----
@@ -271,8 +299,6 @@ class DriveClient:
 # ------------------------------------------------------------------ relay ----
 
 class ReportRelay:
-    PAUSE = 1.0     # between the parts of one report: keeps order, avoids flood limits
-
     def __init__(self, cfg: "ReportsConfig", db: "Database", drive: DriveClient,
                  archive_dir: Path, admins: list[int] | None = None):
         self.cfg = cfg
@@ -280,10 +306,11 @@ class ReportRelay:
         self.drive = drive
         self.archive_dir = Path(archive_dir)
         self.admins = list(admins or [])
-        self.pause = self.PAUSE
+        self.app = None             # AppService, attached in __main__
 
     async def recipients(self) -> list[int]:
-        """reports.chat_ids if set, otherwise the bot's owner.
+        """Who may read reports in the app and gets notified of new ones:
+        reports.chat_ids if set, otherwise the bot's owner.
 
         Not every admin: admins can be friends, and these reports are John's.
         """
@@ -291,89 +318,76 @@ class ReportRelay:
             return list(dict.fromkeys(self.cfg.chat_ids))
         return sorted(set(self.admins) | await self.db.owner_ids())
 
-    async def poll(self, bot, now: datetime | None = None) -> int:
-        """Deliver anything new. Returns how many report deliveries were made.
+    async def poll(self, now: datetime | None = None) -> int:
+        """Store anything new and notify about it. Returns how many
+        notifications went out.
 
         Raises DriveError when Drive can't be read; the next poll is the retry.
         """
         recipients = await self.recipients()
         if not recipients:
-            log.warning("Reports: nobody to send them to yet. Message the bot "
+            log.warning("Reports: nobody to show them to yet. Message the bot "
                         "to claim it, or set reports.chat_ids")
             return 0
         reports = await self.drive.list_reports(self.cfg.folder_id)
         if not reports:
             return 0
+        now = now or datetime.now(timezone.utc)
+        await self._store_new(reports, now)
 
         done = await self.db.report_deliveries()
-        cutoff = (now or datetime.now(timezone.utc)) - timedelta(
-            hours=self.cfg.max_age_hours)
-        sent = 0
+        cutoff = now - timedelta(hours=self.cfg.max_age_hours)
+        notified = 0
         for report in reports:
             pending = [c for c in recipients if (report.id, c) not in done]
             if not pending:
                 continue
+            stored = await self.db.get_report(report.id)
             # A fresh install, or a Pi that was off for days, would otherwise
-            # open with a flood of stale briefings.
-            if report.created < cutoff:
-                for chat_id in pending:
-                    await self.db.claim_report(report.id, chat_id, report.name,
-                                               status="skipped")
-                log.info("Report %s is older than %dh - archived in Drive only, "
-                         "not sent", report.name, self.cfg.max_age_hours)
-                continue
-
-            text = await self.drive.download(report.id)
-            path = self._archive(report.name, text)
+            # ring the phone for a pile of stale briefings. They are still in
+            # the app's list.
+            fresh = stored is not None and report.created >= cutoff
             for chat_id in pending:
-                if not await self.db.claim_report(report.id, chat_id, report.name):
+                if not await self.db.claim_report(
+                        report.id, chat_id, report.name,
+                        status="sent" if fresh else "skipped"):
                     continue        # an overlapping poll got there first
-                try:
-                    await self.send(bot, chat_id, text, path)
-                except Forbidden as exc:
-                    # Blocked the bot: asking again every poll changes nothing.
-                    log.warning("Report %s not delivered to %s: %s",
-                                report.name, chat_id, describe(exc))
-                except Exception as exc:  # noqa: BLE001 - one recipient must not stop the rest
-                    await self.db.release_report(report.id, chat_id)
-                    log.warning("Report %s to %s failed, retrying next poll: %s",
-                                report.name, chat_id, describe(exc))
-                else:
-                    sent += 1
-                    log.info("Report %s sent to %s", report.name, chat_id)
-        return sent
+                if fresh and await self._notify(chat_id, report, stored["body"]):
+                    notified += 1
+        return notified
 
-    async def send(self, bot, chat_id: int, text: str,
-                   path: Path | None = None) -> None:
-        messages = report_messages(text)
-        if not messages:
-            log.info("Report for %s is empty - nothing to send", chat_id)
-            return
-        for i, message in enumerate(messages):
-            if i:
-                await asyncio.sleep(self.pause)
-            try:
-                await bot.send_message(chat_id, message, parse_mode="HTML",
-                                       disable_web_page_preview=True)
-            except BadRequest as exc:
-                # Formatting rejected? Plain text rather than lose the part.
-                log.warning("Telegram rejected a report part as HTML (%s); "
-                            "sending it as plain text", describe(exc))
-                await bot.send_message(chat_id,
-                                       html_to_plain(message)[:TELEGRAM_LIMIT],
-                                       disable_web_page_preview=True)
-        if self.cfg.attach_file and path is not None:
-            try:
-                with path.open("rb") as fh:
-                    await bot.send_document(chat_id, fh, filename=path.name)
-            except Exception as exc:  # noqa: BLE001 - the text already arrived
-                log.warning("Attaching %s failed: %s", path.name, describe(exc))
+    async def _store_new(self, reports: list[Report], now: datetime) -> None:
+        """Keep the text of every recent report, for the app and the archive.
+        The first run also fills the app with the last two weeks."""
+        known = await self.db.report_ids()
+        horizon = now - timedelta(days=BACKFILL_DAYS,
+                                  hours=self.cfg.max_age_hours)
+        for report in reports:
+            if report.id in known or report.created < horizon:
+                continue
+            text = await self.drive.download(report.id)
+            self._archive(report.name, text)
+            await self.db.save_report(report.id, report.name,
+                                      report.created.isoformat(timespec="seconds"),
+                                      text)
+            log.info("Report %s saved for the app", report.name)
+
+    async def _notify(self, chat_id: int, report: Report, text: str) -> bool:
+        if self.app is None:
+            return False
+        try:
+            if await self.app.report_push(chat_id, report.id, text):
+                log.info("Report %s: notified %s", report.name, chat_id)
+                return True
+        except Exception as exc:  # noqa: BLE001 - the report is in the app either way
+            log.warning("Report notification to %s failed: %s",
+                        chat_id, describe(exc))
+        return False
 
     def _archive(self, name: str, text: str) -> Path | None:
-        safe = re.sub(r"[^\w.\- ]", "_", Path(name).name).strip(" .") or "report.md"
         try:
             self.archive_dir.mkdir(parents=True, exist_ok=True)
-            path = self.archive_dir / safe
+            path = self.archive_dir / _safe_name(name)
             path.write_text(text, encoding="utf-8")
             return path
         except OSError as exc:
@@ -391,6 +405,8 @@ def build_relay(cfg: "Config", db: "Database") -> tuple[ReportRelay | None, str]
         return None, "switched off in config.yaml"
     if not rc.folder_id:
         return None, "no Drive folder (set GDRIVE_REPORTS_FOLDER_ID in .env)"
+    if not cfg.space.enabled:
+        return None, "reports are read in the Orbital app, which needs space.enabled"
     key = Path(rc.service_account_file).expanduser()
     if not key.exists():
         return None, f"service account key {key} not found"

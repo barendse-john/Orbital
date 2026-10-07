@@ -87,6 +87,14 @@
   .story .s { color: var(--dim); font-size: 13.5px; }
   .story img { width: 100%; max-height: 170px; object-fit: cover; border-radius: 10px; margin: 8px 0 2px; }
 
+  .report-row { width: 100%; text-align: left; font: inherit; }
+  .report { margin-top: 10px; }
+  .report p { margin: 0 0 14px; white-space: pre-line; font-size: 15px; line-height: 1.55; }
+  .report p:first-child { font-size: 19px; line-height: 1.3; }
+  .report b { color: var(--text); font-weight: 650; }
+  .report i { color: var(--dim); }
+  .report code { font: 13px var(--mono); background: var(--card2); padding: 1px 5px; border-radius: 6px; }
+
   .story .why { color: var(--accent); font-size: 12.5px; margin-top: 6px; opacity: .85; }
   .votes { display: flex; gap: 6px; margin-top: 8px; }
   .votes button { padding: 4px 10px; border-radius: 99px; border: 1px solid var(--line); color: var(--dim); font-size: 13px; }
@@ -131,6 +139,7 @@
     color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .3px; }
   nav svg { width: 22px; height: 22px; }
   nav .on { color: var(--accent); }
+  nav [hidden] { display: none; }
   nav .on svg { filter: drop-shadow(0 0 6px rgba(255,182,40,.6)); }
 
   .sheet-bg { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 30; opacity: 0; pointer-events: none; transition: .2s; }
@@ -181,6 +190,10 @@
     <div id="newsBody"></div>
   </section>
 
+  <section class="tab" id="tab-reports">
+    <div id="reportsBody"></div>
+  </section>
+
   <section class="tab" id="tab-settings">
     <div id="settingsBody"></div>
   </section>
@@ -189,6 +202,7 @@
 <nav>
   <button data-tab="launches"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2c3 3 4.5 6.5 4.5 10.5L14 16h-4l-2.5-3.5C7.5 8.5 9 5 12 2z"/><circle cx="12" cy="9" r="1.6"/><path d="M10 16l-1 5 3-2 3 2-1-5"/></svg>Launches</button>
   <button data-tab="news"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10M7 12h10M7 16h6"/></svg>News</button>
+  <button data-tab="reports" id="navReports" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 4h6v3H9z"/><path d="M15 5h2a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2"/><path d="M9 12h6M9 16h4"/></svg>Reports</button>
   <a href="/" id="globeLink"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c-3 3-3 15 0 18M12 3c3 3 3 15 0 18"/></svg>Globe</a>
   <button data-tab="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</button>
 </nav>
@@ -266,6 +280,7 @@ function dayLabel(ms) {
   const diff = Math.round((new Date(d).setHours(0, 0, 0, 0) - today) / 864e5);
   if (diff === 0) return "Today";
   if (diff === 1) return "Tomorrow";
+  if (diff === -1) return "Yesterday";
   return d.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" });
 }
 function ago(iso) {
@@ -382,6 +397,7 @@ function openSheet(...kids) {
 function closeSheet() {
   $("sheet").classList.remove("on"); $("sheetBg").classList.remove("on");
   if (location.hash.includes("launch=")) history.replaceState(null, "", "#launches");
+  if (location.hash.includes("report=")) history.replaceState(null, "", "#reports");
 }
 $("sheetBg").onclick = closeSheet;
 // Swipe the sheet down to close it.
@@ -405,6 +421,7 @@ async function loadMe() {
   if (!token()) { me = null; return; }
   try { me = await api("/api/me"); setLive(true); }
   catch (e) { if (e.status === 401) { store.set("token", ""); toast("Signed out - pair again with /app"); } me = null; }
+  finally { $("navReports").hidden = !(me && me.reports); }
 }
 
 let newsView = store.get("newsView", "top");
@@ -522,6 +539,50 @@ async function refreshBriefing() {
   renderNews();
 }
 
+// ----------------------------------------------------------------- reports
+async function renderReports() {
+  const body = $("reportsBody"); body.replaceChildren();
+  if (!token()) { body.append(pairCard()); return; }
+  body.append(el("h2", null, "Reports"), el("div", { class: "skeleton" }), el("div", { class: "skeleton" }));
+  let reports = [], problem = "";
+  try { reports = (await api("/api/me/reports")).reports || []; }
+  catch (e) { problem = e.status === 403 ? "Reports from Drive go to the bot's owner only." : "Couldn't reach the Pi."; }
+  body.replaceChildren(el("h2", null, "Reports"));
+  if (problem) { body.append(el("div", { class: "card empty" }, el("b", null, "No reports here"), problem)); return; }
+  if (!reports.length) {
+    body.append(el("div", { class: "card empty" }, el("b", null, "No reports yet"),
+      "New reports in your Drive folder show up here within 15 minutes."));
+    return;
+  }
+  let lastDay = "";
+  for (const r of reports) {
+    const ms = Date.parse(r.created), day = dayLabel(ms);
+    if (day !== lastDay) { body.append(el("div", { class: "day" }, day)); lastDay = day; }
+    body.append(el("button", { class: "story report-row", onclick: () => openReport(r.id) },
+      el("div", { class: "top" }, el("span", { class: "chip" }, "REPORT"), fmtTime(ms)),
+      el("div", { class: "h" }, r.title),
+      r.preview ? el("div", { class: "s" }, r.preview) : ""));
+  }
+}
+
+async function openReport(id) {
+  history.replaceState(null, "", "#report=" + encodeURIComponent(id));
+  openSheet(el("div", { class: "skeleton" }), el("div", { class: "skeleton" }));
+  let r;
+  try { r = await api("/api/me/reports/" + encodeURIComponent(id)); }
+  catch (e) { openSheet(el("div", { class: "empty" }, el("b", null, "Couldn't open this report"), e.message)); return; }
+  // The Pi sends the report as a small, already-escaped HTML subset
+  // (b, i, code and http(s) links) - the same one Telegram gets.
+  const text = el("div", { class: "report" });
+  text.innerHTML = (r.blocks || []).map((b) => `<p>${b}</p>`).join("");
+  text.querySelectorAll("a").forEach((a) => { a.target = "_blank"; a.rel = "noopener"; });
+  const share = navigator.share ? el("button", { class: "btn", onclick: () =>
+    navigator.share({ title: r.title, text: text.innerText }).catch(() => {}) }, "Share") : null;
+  const ms = Date.parse(r.created);
+  openSheet(el("span", { class: "chip" }, `${dayLabel(ms)}, ${fmtTime(ms)}`), text,
+    share ? el("div", { class: "row-btns" }, share) : "");
+}
+
 // ---------------------------------------------------------------- settings
 let config = { push: false, vapid: "" };
 
@@ -602,6 +663,9 @@ async function renderSettings() {
     setting("Also send to Telegram", "Turn off to move your news to the app only", toggle(p.digest_telegram, (v, i) => save({ digest_telegram: v }, i))),
     setting("Breaking news", "Major stories on your topics as they happen (max 3 a day)", toggle(p.breaking_push !== false, (v, i) => save({ breaking_push: v }, i)))));
 
+  if (me.reports) body.append(el("h2", null, "Reports"), el("div", { class: "group" },
+    setting("Notify me", "When a new report lands in your Drive folder", toggle(p.report_push !== false, (v, i) => save({ report_push: v }, i)))));
+
   const feed = `${location.origin}/calendar.ics`;
   body.append(el("h2", null, "Calendar"), el("div", { class: "group" },
     setting("All launches as a calendar", "Subscribe once; it keeps itself up to date. Google Calendar needs a public link - see the README.",
@@ -614,13 +678,14 @@ async function renderSettings() {
 }
 
 // -------------------------------------------------------------------- tabs
-const TABS = ["launches", "news", "settings"];
+const TABS = ["launches", "news", "reports", "settings"];
 function show(tab) {
   if (!TABS.includes(tab)) tab = "launches";
   document.querySelectorAll("section.tab").forEach(s => s.classList.toggle("on", s.id === "tab-" + tab));
   document.querySelectorAll("nav [data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
   store.set("tab", tab);
   if (tab === "news") renderNews();
+  if (tab === "reports") renderReports();
   if (tab === "settings") renderSettings();
   window.scrollTo(0, 0);
 }
@@ -628,7 +693,8 @@ document.querySelectorAll("nav [data-tab]").forEach(b => b.onclick = () => { his
 $("refresh").onclick = async () => {
   const b = $("refresh"); b.classList.add("spin");
   const tab = store.get("tab", "launches");
-  if (tab === "news") { if (newsView === "top") await renderNews(); else await refreshBriefing(); } else { await loadLaunches(); await loadMe(); if (tab === "settings") renderSettings(); }
+  if (tab === "reports") await renderReports();
+  else if (tab === "news") { if (newsView === "top") await renderNews(); else await refreshBriefing(); } else { await loadLaunches(); await loadMe(); if (tab === "settings") renderSettings(); }
   b.classList.remove("spin");
 };
 setInterval(() => {
@@ -637,17 +703,25 @@ setInterval(() => {
 }, 1000);
 setInterval(loadLaunches, 5 * 60e3);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loadLaunches(); });
+// A notification tapped while the app is open only changes the #hash.
+window.addEventListener("hashchange", () => {
+  const m = location.hash.match(/report=([^&]+)/);
+  if (m) { show("reports"); openReport(decodeURIComponent(m[1])); }
+});
 
 // -------------------------------------------------------------------- boot
 (async function boot() {
   if ("serviceWorker" in navigator && isSecureContext) navigator.serviceWorker.register("/app/sw.js", { scope: "/app/" }).catch(() => {});
   const h = location.hash.replace("#", "");
-  show(h.startsWith("launch=") ? "launches" : (TABS.includes(h) ? h : store.get("tab", "launches")));
+  const reportId = (h.match(/^report=([^&]+)/) || [])[1];
+  show(h.startsWith("launch=") ? "launches" : reportId ? "reports" : (TABS.includes(h) ? h : store.get("tab", "launches")));
   try { config = await api("/api/app/config"); } catch (e) { /* offline */ }
   await Promise.all([loadLaunches(), loadMe()]);
   const tab = store.get("tab", "launches");
+  if (tab === "reports" && token() && me && !me.reports) show("launches");
   if (tab === "news") renderNews();
   if (tab === "settings") renderSettings();
+  if (reportId) openReport(decodeURIComponent(reportId));
 })();
 </script>
 </body>

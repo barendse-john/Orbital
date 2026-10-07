@@ -115,6 +115,9 @@ def build_application(cfg: Config) -> Application:
     relay, why_not = build_relay(cfg, db)
     if relay is None and cfg.reports.folder_id:
         log.warning("Reports from Drive are off: %s", why_not)
+    if relay is not None and appsvc is not None:
+        relay.app = appsvc
+        appsvc.relay = relay
     web = {}
 
     async def post_init(app: Application) -> None:
@@ -239,13 +242,13 @@ def schedule_space(app: Application, db: Database, space: SpaceService,
 
 def schedule_reports(app: Application, relay: ReportRelay, minutes: int) -> None:
     """Poll the Drive folder. The first check is a minute after start, so a
-    deploy delivers a report that is waiting rather than sitting on it."""
+    deploy picks up a report that is waiting rather than sitting on it."""
 
-    async def reports_job(ctx) -> None:
+    async def reports_job(_ctx) -> None:
         try:
-            sent = await relay.poll(ctx.bot)
+            sent = await relay.poll()
             if sent:
-                log.info("Delivered %d report(s) from Drive", sent)
+                log.info("Notified about %d new report(s) from Drive", sent)
         except DriveError as exc:
             log.warning("Report check failed: %s", exc)
         except Exception:  # noqa: BLE001 - a bad poll must not unschedule the job
@@ -299,7 +302,7 @@ async def _check(cfg: Config) -> int:
                 found = await relay.drive.list_reports(cfg.reports.folder_id)
                 to = await relay.recipients()
                 print(f"  reports    OK  ({len(found)} in the Drive folder; "
-                      f"sent to {', '.join(map(str, to)) or 'nobody yet'})")
+                      f"shown in the app to {', '.join(map(str, to)) or 'nobody yet'})")
             except Exception as exc:  # noqa: BLE001
                 print(f"  reports    FAIL ({describe(exc)})")
                 ok = False
