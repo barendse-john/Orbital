@@ -1,9 +1,9 @@
-# News Bot
+# Orbital
 
-A self-hosted news assistant for a Raspberry Pi. It follows the topics you
-care about, sends you a ranked morning briefing, and tracks rocket launches and
-satellites on a 3D globe. You talk to it on Telegram in plain English, or read
-everything in **Orbital**, its installable phone app.
+A self-hosted news and space assistant for a Raspberry Pi. It follows the
+topics you care about, sends you a ranked morning briefing, and tracks rocket
+launches and satellites on a 3D globe. Read everything in the installable
+**Orbital** phone app, or talk to the bot on Telegram in plain English.
 
 - **Python 3.10+**, SQLite, no database server, no cloud hosting
 - **Runs on a Pi 4/5** (or any Linux box) as a systemd service
@@ -76,8 +76,8 @@ orbits ([CelesTrak](https://celestrak.org)) need no keys.
 ### 2. Install
 
 ```bash
-git clone https://github.com/barendse-john/news_bot.git
-cd news_bot
+git clone https://github.com/barendse-john/orbital.git
+cd orbital
 ./scripts/setup.sh
 ```
 
@@ -410,7 +410,7 @@ mkdir -p data && mv newsbot.db data/
 sudo systemctl restart newsbot
 ```
 
-To back up weekly, add `0 4 * * 0 /path/to/news_bot/scripts/backup.sh` to
+To back up weekly, add `0 4 * * 0 /path/to/orbital/scripts/backup.sh` to
 `crontab -e`.
 
 ---
