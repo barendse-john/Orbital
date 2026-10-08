@@ -93,9 +93,9 @@ space:
   max_satellites_per_group: 2000
 
 reports:
-  # Markdown reports (e.g. the Kalulu morning briefing) from a Google Drive
+  # Markdown reports (e.g. a daily briefing a script writes) from a Google Drive
   # folder, read in the Orbital app's Reports tab with a phone notification
-  # when one lands. Setup: README, "Reports from Google Drive".
+  # when one lands. Setup: README, "Optional: reports from Google Drive".
   # Stays off until GDRIVE_REPORTS_FOLDER_ID is set in .env.
   enabled: true
   folder_id: ${GDRIVE_REPORTS_FOLDER_ID}

@@ -1,8 +1,9 @@
-# Install with:
-#   sudo cp scripts/newsbot.service /etc/systemd/system/
+# User= and the paths below are examples. Install from the checkout with your
+# own filled in (this leaves the file in the repo untouched):
+#   sed "s|/home/john/Documents/news_bot|$PWD|g; s|^User=john|User=$USER|" \
+#     scripts/newsbot.service | sudo tee /etc/systemd/system/newsbot.service >/dev/null
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now newsbot
-# Adjust User and the two paths if your project doesn't live in /home/john/Documents/news_bot.
 
 [Unit]
 Description=Telegram news bot

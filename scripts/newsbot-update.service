@@ -1,5 +1,6 @@
 # Runs scripts/deploy.sh once. Triggered by newsbot-update.timer, not enabled
-# directly.
+# directly. User= and the paths are examples - install it with the same sed
+# substitution as newsbot.service (see the README, "Automatic updates").
 [Unit]
 Description=Pull latest newsbot code and restart if changed
 After=network-online.target

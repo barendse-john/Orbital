@@ -1,11 +1,29 @@
+# Python
 __pycache__/
 *.py[cod]
 .venv/
 venv/
+.pytest_cache/
+
+# Secrets and local state - never commit these
 .env
 config.yaml
 data/
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
+*.pem
+*service-account*.json
+newsbot-*.tar.gz
 *.log
-.pytest_cache/
+
+# Personal scripts kept next to the project
+John's Scripts/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

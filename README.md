@@ -1,59 +1,92 @@
 # News Bot
 
-A private Telegram bot that follows the topics you care about and sends you a
-daily digest. Talk to it normally - *"i like Manchester United"*, *"search up
-news about satellites"* - or use slash commands when you'd rather be terse.
+A self-hosted news assistant for a Raspberry Pi. It follows the topics you
+care about, sends you a ranked morning briefing, and tracks rocket launches and
+satellites on a 3D globe. You talk to it on Telegram in plain English, or read
+everything in **Orbital**, its installable phone app.
 
-Built for a Raspberry Pi: Python 3.10+, SQLite, no external services beyond the
-news source and the model you choose.
+- **Python 3.10+**, SQLite, no database server, no cloud hosting
+- **Runs on a Pi 4/5** (or any Linux box) as a systemd service
+- **Free to run** apart from the AI: about $0.30–0.50 a month on Claude Haiku,
+  or nothing with a local Ollama model
+
+---
+
+## Contents
+
+- [What it does](#what-it-does)
+- [Quick start](#quick-start)
+- [Using it](#using-it)
+- [Orbital, the phone app](#orbital-the-phone-app)
+- [The launch and satellite globe](#the-launch-and-satellite-globe)
+- [How news is chosen](#how-news-is-chosen)
+- [Choosing an AI backend](#choosing-an-ai-backend)
+- [Optional: reports from Google Drive](#optional-reports-from-google-drive)
+- [Running it long-term](#running-it-long-term)
+- [Security notes](#security-notes)
+- [Project layout and tests](#project-layout-and-tests)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
 
 ---
 
 ## What it does
 
+**News**
+
 | | |
 |---|---|
-| **Understands plain English** | *"i like Manchester United"* saves a topic. *"any updates on Starship?"* runs a one-off search. *"send it at 7am"* moves your digest. |
-| **Asks before it guesses** | Say *"finance"* and it asks what you actually mean - up to four short questions, stopping the moment it could write a good query - then searches for `"financial markets" OR "central bank"` instead of matching the word anywhere. |
-| **Learns from talking to you** | Say *"more on launch startups"* mid-conversation and the topic's query changes there and then. Something you just keep asking about has to keep coming up for over a week before it counts, so one busy news week doesn't rewrite what you follow. Every change is announced in one line. |
-| **Daily digest** | One short message at a time you pick, in your own timezone. The best six stories of the last 24 hours, ranked by how many outlets ran them, how well they match your topic, the source's track record and how late in the day they broke. Each story is a sentence with the outlet's name carrying the link, and the lead story's picture on top. |
-| **A news chat, not a digest on demand** | Ask for a digest mid-afternoon and it says so, then asks what you actually want to know - and answers from real reporting, with the links in the words. It follows up until you say thanks or go quiet. |
-| **Per-person setup** | Whitelisted friends each get their own topics, their own digest time, their own timezone. |
-| **Friends ask, you tap** | A stranger who messages the bot gets turned away politely, and you get their name, username and first message with Approve / Deny buttons. One person, one request, however many times they message. `/requests` shows the history. |
-| **Never repeats itself** | An article you've already been sent won't come back, even if a different source or a second topic turns it up. |
-| **Two news sources** | GNews API while the free 100/day allowance lasts, then Google News RSS - free, unlimited, no key. |
-| **Reports from Drive** | Markdown reports dropped into a Google Drive folder (the Kalulu morning briefing) appear in the Orbital app's Reports tab within 15 minutes, with a notification. |
-| **Two AI backends** | Anthropic (cheap, fast) or a local Ollama model (free, slower). One line in `config.yaml`. |
+| **Understands plain English** | *"i like Manchester United"* saves a topic. *"any updates on Starship?"* runs a one-off search. *"send it at 7am"* moves your briefing. |
+| **Asks before it guesses** | Say *"finance"* and it asks what you actually mean (up to four short questions) and then searches for `"financial markets" OR "central bank"` instead of matching the word anywhere. |
+| **Learns from conversation** | *"more on launch startups"* retunes a topic on the spot. Something you keep asking about has to keep coming up for over a week before it counts, so one busy news week doesn't rewrite what you follow. Every change is announced in one line. |
+| **Ranked morning briefing** | An hourly engine collects stories from Google News and the site feeds you choose, has the AI score each one for relevance and impact, and builds your briefing from the best. Major stories can arrive as they break (capped per day). |
+| **A news chat** | Ask a question and it answers from real reporting, with links in the words. When nothing matches, it widens the time window and rewrites the query before falling back on background knowledge. |
+| **Never repeats itself** | Articles are deduplicated by normalised headline, so the same story doesn't arrive twice from two sources or under two topics. |
+
+**Space**
+
+| | |
+|---|---|
+| **Launch reminders** | `/launches` lists what's next; `/launchalerts` reminds you a day and 30 minutes before liftoff (and again if a launch slips). |
+| **3D globe** | CesiumJS globe on the real WGS84 ellipsoid with satellites flying on their actual orbits (SGP4 in the browser), countdown cards above launch pads, and news for whatever you click. |
+
+**People and access**
+
+| | |
+|---|---|
+| **Per-person setup** | Everyone you let in gets their own topics, briefing time and timezone. Nothing is shared. |
+| **Friends ask, you tap** | A stranger who messages the bot is told you've been asked; you get their name, username and first message with **Approve / Deny** buttons. One request per person however many times they message, and a denial is final. |
+| **First message claims the bot** | No whitelist editing: the first person to message a fresh bot becomes its owner and admin. |
 
 ---
 
-## Setup
+## Quick start
 
-### 1. Get your tokens
+### 1. Get your keys
 
-**Telegram bot token** - message [@BotFather](https://t.me/BotFather), send
-`/newbot`, follow the prompts, copy the token.
+| Key | Where | Needed? |
+|---|---|---|
+| Telegram bot token | Message [@BotFather](https://t.me/BotFather), send `/newbot` | Yes |
+| Anthropic API key | [console.anthropic.com](https://console.anthropic.com) → API keys | Only for the `anthropic` backend |
+| GNews API key | [gnews.io](https://gnews.io), free tier, 100 requests/day | No, Google News RSS works without one |
 
-**Anthropic API key** (if using the `anthropic` backend) -
-[console.anthropic.com](https://console.anthropic.com) → API keys.
-
-**GNews API key** (optional) - [gnews.io](https://gnews.io) → free tier, 100
-requests/day. Leave it blank to run on RSS alone.
+Launch data ([The Space Devs](https://thespacedevs.com/llapi)) and satellite
+orbits ([CelesTrak](https://celestrak.org)) need no keys.
 
 ### 2. Install
 
 ```bash
-git clone <your-repo> ~/newsbot   # or just copy the folder to the Pi
-cd ~/newsbot
+git clone https://github.com/barendse-john/news_bot.git
+cd news_bot
 ./scripts/setup.sh
 ```
 
-That creates a virtualenv, installs everything, and copies `.env.example` and
-`config.example.yaml` into place.
+`setup.sh` creates a virtualenv in `.venv/`, installs the requirements, and
+copies `.env.example` → `.env` and `config.example.yaml` → `config.yaml`.
 
 ### 3. Configure
 
-`.env` holds the secrets:
+Put your secrets in `.env`:
 
 ```ini
 TELEGRAM_BOT_TOKEN=123456789:AA...
@@ -61,173 +94,186 @@ ANTHROPIC_API_KEY=sk-ant-...
 GNEWS_API_KEY=
 ```
 
-`config.yaml` holds everything else - you don't need to edit the whitelist
-by hand. Leave it empty, start the bot, and message it: the first person to
-do so automatically becomes its owner (whitelisted and admin), no restart or
-YAML editing required.
-
-```yaml
-telegram:
-  whitelist: []
-  admins: []
-```
-
-Only fill these in yourself if you want to hand-pick the owner ahead of time,
-or you're restoring a bot's `config.yaml` without its database and want to
-skip the claim step.
+`config.yaml` holds everything else and works as copied. Every option is
+commented in [`config.example.yaml`](config.example.yaml). You don't need to
+fill in `telegram.whitelist` or `telegram.admins`: leave them empty and the
+first person to message the bot becomes its owner.
 
 ### 4. Check and run
 
 ```bash
-./.venv/bin/python -m newsbot --check   # verifies token, key, and a live news fetch
+./.venv/bin/python -m newsbot --check   # verifies the token, the AI key and a live news fetch
 ./.venv/bin/python -m newsbot
 ```
 
-Message the bot on Telegram and it walks you through setup: it asks for your
-timezone (tap **📍 Share my location**, or type a city like *"Amsterdam"*),
-then what time you want your digest. Only the timezone is stored - the
-coordinates are used once and thrown away.
+Message your bot on Telegram. It asks for your timezone (tap
+**📍 Share my location**, or type a city such as *"Amsterdam"*) and then what
+time you want your briefing. Only the timezone is stored; the coordinates are
+used once and discarded.
 
-### 5. Keep it running
+### 5. Run it as a service
+
+The unit files in `scripts/` contain example paths. This installs them with
+your username and checkout path filled in, without editing the files in the
+repo:
 
 ```bash
-sudo cp scripts/newsbot.service /etc/systemd/system/
+sed "s|/home/john/Documents/news_bot|$PWD|g; s|^User=john|User=$USER|" \
+  scripts/newsbot.service | sudo tee /etc/systemd/system/newsbot.service >/dev/null
 sudo systemctl daemon-reload
 sudo systemctl enable --now newsbot
-journalctl -u newsbot -f          # watch the logs
+journalctl -u newsbot -f      # watch the logs
 ```
-
-Edit the `User=` and paths in the unit file if the project isn't at
-`/home/pi/newsbot`.
 
 ---
 
 ## Using it
 
-Plain English works for everything:
+Plain English works for almost everything:
 
 | You say | It does |
 |---|---|
-| *"i like Manchester United"* | Saves a topic |
-| *"keep me posted on the ECB"* | Saves a topic |
-| *"search up news about satellites"* | One-off search, right now |
-| *"what's happening in Sudan"* | One-off search |
+| *"i like Manchester United"* | Follows a topic |
+| *"keep me posted on the ECB"* | Follows a topic |
+| *"search up news about satellites"* | Searches right now |
+| *"what's the market saying about Nvidia?"* | Reads the coverage and answers |
 | *"stop sending me tennis"* | Drops a topic |
-| *"send the digest at 7am"* | Moves your delivery time |
+| *"send the briefing at 7am"* | Moves your delivery time |
 | *"i'm in Tokyo now"* | Changes your timezone |
 
-And the commands, which keep working even if the model is unreachable:
+The commands keep working even when the AI is unreachable:
 
 ```
 /topics            what you follow
 /add <topic>       follow something
 /remove <topic>    stop following it
+/clear             stop following everything
 /retune <topic>    narrow what a topic searches for (or just say so)
 /search <query>    search now
-/digest            (admins) send the ranked digest immediately
-/time 08:00        set your digest time
+/time 08:00        set your briefing time
 /timezone Tokyo    set your timezone
-/pause /resume     mute or unmute the daily digest
-/requests          (admins) who has asked to join, and what you decided
+/pause  /resume    mute or unmute the daily briefing
 /status            your settings and today's API usage
-/allow <id>        (admins) let a friend in
-/deny <id>         (admins) remove them
+/launches          the next five launches, in your timezone
+/launchalerts      toggle launch reminders
+/app               pair your phone with the Orbital app
+/help              the list in Telegram
+
+Admins only:
+/digest            send the ranked briefing now
+/requests          who has asked to join, and what you decided
+/users             who can use the bot
+/allow <id>        let someone in
+/deny <id>         remove them
 ```
 
 ---
 
-## Backups
+## Orbital, the phone app
 
-Git covers the code. It deliberately doesn't cover the three things that
-would actually hurt to lose, because they're secret or machine-specific:
-`.env` (your API keys), `config.yaml`, and `data/newsbot.db` (topics,
-timezone, digest time, sent-article history).
+The bot serves an installable web app at `/app` on port 8080. It shows
+upcoming launches with countdowns (Watch, launch page and calendar buttons),
+your briefing and topics with 👍/👎 voting, a **Top now** view of the last 24
+hours, an optional Reports tab, and push notifications for launch reminders,
+breaking stories and the morning briefing.
 
-```bash
-./scripts/backup.sh
-```
+**Pairing:** send `/app` to the bot and open the link on your phone.
+`/app unpair` signs every paired phone out.
 
-Writes a timestamped `.tar.gz` to `~/newsbot-backups/`, keeping the last 14.
-The database is snapshotted through sqlite3's backup API rather than copied,
-so a backup taken while the bot is mid-write is still consistent. The archive
-holds your keys in plaintext and is written `0600` accordingly.
-
-**Get it off the Pi.** An SD card that dies takes its own backups with it:
+**Installing and notifications need HTTPS.** Over plain `http://` the page
+works, but Android only offers *Create shortcut* and won't allow
+notifications. The easiest way to get HTTPS is
+[Tailscale](https://tailscale.com) on both the Pi and the phone:
 
 ```bash
-scp john@raspberrypi.local:~/newsbot-backups/newsbot-*.tar.gz .
+sudo tailscale serve --bg 8080      # → https://<pi-name>.<tailnet>.ts.net
 ```
 
-**To restore onto a fresh card**, clone the repo as usual, then unpack over
-the top:
+Turn on MagicDNS and HTTPS certificates in the Tailscale admin console (DNS
+page), then point the bot's links at that address in `config.yaml`:
+
+```yaml
+space:
+  public_url: https://<pi-name>.<tailnet>.ts.net
+```
+
+Now open the `/app` link, choose Chrome ⋮ → **Install app**, and switch on
+notifications in the app's Settings tab.
+
+**Calendar:** every launch has **+ Google Calendar** and **+ .ics** buttons,
+and the whole schedule is a feed at `/calendar.ics`. Google Calendar can only
+subscribe to a public URL. To expose that one path, and nothing else:
 
 ```bash
-cd ~/newsbot
-tar -xzf newsbot-20260903-220546.tar.gz
-mkdir -p data && mv newsbot.db data/
-sudo systemctl restart newsbot
+sudo tailscale funnel --bg --https=8443 --set-path=/calendar.ics http://127.0.0.1:8080/calendar.ics
 ```
 
-Your topics, schedule and read history come back exactly as they were.
+Then add `https://<pi-name>.<tailnet>.ts.net:8443/calendar.ics` under Google
+Calendar → Other calendars → From URL.
 
-**To run it weekly**, add a cron entry (`crontab -e`):
+---
 
-```
-0 4 * * 0 /home/john/newsbot/scripts/backup.sh
-```
+## The launch and satellite globe
 
-## Keeping the Pi up to date
+The globe is served at the root of the same web server
+(`http://<pi-hostname>.local:8080`). It opens in an amber "hologram" view;
+**Real view** switches to satellite imagery.
 
-The Pi's checkout is a git clone of this repo, so pushing a change to GitHub
-doesn't reach it by itself - something on the Pi has to `git pull`.
-`newsbot-update.timer` does that automatically: it checks for new commits
-every 15 minutes and, if there are any, pulls, reinstalls dependencies if
-`requirements.txt` changed, and restarts the service.
+- **Click** a country or ocean for its latest news, a satellite for its orbit
+  and news about it, or a launch pad for the launch, the rocket's specs and
+  news.
+- **Launches** in the next 72 hours get a card pinned above their pad with a
+  live countdown, which pulses red in the final hour.
+- **Satellites** are propagated with SGP4 in the browser. Tap one for its
+  altitude, speed and full orbit, or **Follow** it. The 1×/60×/600× buttons
+  speed up time.
+- **Layers** (Sats, Launches, Grid, Rings, Borders) toggle on and off;
+  **X-ray** makes the globe see-through.
 
-**One-time setup on the Pi:**
+**Mouse controls (default):** scroll to zoom, middle-drag or Shift+left-drag
+to pan, right-drag to spin the globe like a desk globe, Ctrl+right-drag to
+tilt, and **⌖ Center** (or `C`) to reset. The **Mouse:** button switches to
+Google Earth's layout and remembers your choice. On a phone, one finger pans
+and two fingers pinch to zoom.
 
-```bash
-# Let deploy.sh restart the service without asking for a password
-echo "john ALL=(root) NOPASSWD: /usr/bin/systemctl restart newsbot" | \
-  sudo tee /etc/sudoers.d/newsbot-deploy
-sudo chmod 440 /etc/sudoers.d/newsbot-deploy
+Globe news comes from Google News RSS (cached for 15 minutes), so it never
+uses up your GNews quota. The page loads CesiumJS from cdn.jsdelivr.net, so
+the viewing device needs internet access; the Pi only serves the page and the
+data. Settings are under `space:` in `config.yaml`.
 
-sudo cp scripts/newsbot-update.service scripts/newsbot-update.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now newsbot-update.timer
-```
+---
 
-Check it's scheduled and see when it last ran:
+## How news is chosen
 
-```bash
-systemctl list-timers newsbot-update.timer
-journalctl -t newsbot-deploy -f
-```
+Every hour the news engine (`newsbot/engine.py`):
 
-**Deploying by hand** (skip the wait, or check what a pull would do) works the
-same way whether or not the timer is installed:
+1. **Collects** a pool of stories: Google News RSS for each topic over the
+   last 48 hours, plus the site feeds under `news.engine.feeds` (BBC, Ars
+   Technica, SpaceNews, The Verge and the New York Times by default; add
+   your own).
+2. **Scores** each new story with the AI: which of your topics it belongs to,
+   relevance 0–10 and impact 0–10, and a few words on why. Your 👍/👎 votes in
+   the app are given to the AI as examples of your taste.
+3. **Ranks** by relevance, impact, how many outlets carry the story, source
+   credibility, freshness and your votes for that outlet. Duplicate coverage
+   of one event is merged.
 
-```bash
-./scripts/deploy.sh
-```
+The morning briefing is the best unsent stories (8 by default, at most 3 per
+topic). Stories scored as major are pushed as they break, at most 3 a day.
 
-It's quiet when there's nothing new, and only pulls when the Pi is behind
-`origin/main` - `.env`, `config.yaml`, and `data/` are gitignored, so nothing
-you've configured locally is ever touched or overwritten by a pull.
+**Sources.** GNews is used while its free 100 requests/day last; after that,
+everything falls through to Google News RSS, which needs no key and has no
+limit. A transient GNews error (a 503 or a timeout) doesn't count against the
+quota. `/status` shows the day's usage.
 
-If a deploy ever fails because of local changes on the Pi (`git pull was not
-a fast-forward`), that means something was edited directly on the Pi instead
-of pushed through git - `git status` there to see what, then either commit
-and push it properly or `git stash` it before pulling again.
-
-## Adding friends
-
-1. They message the bot; it replies with their Telegram ID.
-2. You send `/allow <their id>`.
-3. They send `/start` and do their own setup.
-
-They get their own topics, their own digest time, and their own timezone.
-Nothing is shared. `/deny <id>` removes them again.
+**When a question finds nothing.** News search matches words that literally
+appear in headlines, which works for names (*Starship*) but not for themes
+(*"where are corporations investing"*). An empty search therefore widens in
+two steps: first the time window (24 hours → a week → a month), then the query
+itself, which the AI rewrites into terms that actually appear in coverage
+(`Nvidia data center spending`, `capital expenditure earnings`). When a
+rewrite found the results, the reply says so. Only after all of that does it
+answer from background knowledge.
 
 ---
 
@@ -238,11 +284,11 @@ ai:
   backend: anthropic     # or: ollama
 ```
 
-**Anthropic** - roughly $0.30-0.50/month at five topics and five articles a
-day on `claude-haiku-4-5`. Fast enough that chat feels instant.
-
-**Ollama** - free and private, but a Pi with no GPU takes 30+ seconds per
-summary. Sensible if you're running this on a desktop:
+| | Anthropic | Ollama |
+|---|---|---|
+| Cost | ~$0.30–0.50/month on `claude-haiku-4-5` | Free |
+| Speed | Chat feels instant | 30+ s per summary on a Pi without a GPU |
+| Best for | Running on the Pi itself | Pointing the Pi at a desktop with a GPU |
 
 ```bash
 ollama pull llama3.2:3b
@@ -252,81 +298,163 @@ ollama pull llama3.2:3b
 ai:
   backend: ollama
   ollama:
-    base_url: http://localhost:11434   # or your desktop's IP from the Pi
+    base_url: http://localhost:11434   # or your desktop's IP
     model: llama3.2:3b
 ```
 
-Switching is a config edit and a restart - no data migration, no code change.
-
-**If the model is down entirely**, the bot keeps working: keyword rules handle
-`add`/`remove`/`search`, and digests fall back to each article's own blurb
-instead of a written summary.
+Switching takes a config edit and a restart, with no migration. **If the
+model is down entirely**, the bot keeps working: keyword rules handle
+add/remove/search, and briefings fall back to each article's own summary.
 
 ---
 
-## How the news sources fit together
+## Optional: reports from Google Drive
 
-Each topic in a digest costs one search. With the default cap of five topics
-that's five requests a day, well inside the GNews free tier - so on-demand
-searches have plenty of headroom too.
+If something else writes Markdown reports into a Google Drive folder (a
+scheduled AI routine, a script, you), the bot checks that folder every 15
+minutes and shows new reports in Orbital's **Reports** tab, with a
+notification that opens straight to the report. Copies are kept in
+`data/reports/`. By default only the bot's owner sees the tab; list other
+Telegram user IDs under `reports.chat_ids` to share it.
 
-When GNews returns a quota error, the bot marks the allowance spent for the day
-and everything falls through to Google News RSS, which has no key and no limit.
-Transient GNews errors (a 503, a timeout) hand the request back to the counter
-so a bad minute doesn't cost you a slot. `/status` shows the day's usage.
+**1. Give the Pi read access to Drive** (one time). The Pi uses a *service
+account*, a Google identity with no browser login, which suits a headless
+machine.
 
-Articles are identified by their normalised headline rather than their URL,
-because GNews and RSS hand back different links for the same story. That's what
-stops the same piece arriving twice from two sources, or twice under two
-topics.
+1. At <https://console.cloud.google.com/>, create a project.
+2. **APIs & Services → Library** → enable **Google Drive API**.
+3. **IAM & Admin → Service Accounts → Create**. Give it any name and skip the
+   roles.
+4. Open it → **Keys → Add key → JSON**. Save the file as
+   `data/google-service-account.json` in the checkout and `chmod 600` it.
+5. Copy the service account's email (`…@….iam.gserviceaccount.com`), then in
+   Drive share the reports folder with it as **Viewer**. It can see that
+   folder and nothing else.
+
+**2. Point the bot at the folder.** In `.env`, set the folder ID (the long
+string at the end of the folder's URL):
+
+```ini
+GDRIVE_REPORTS_FOLDER_ID=1AbC...
+```
+
+**3. Check and restart:**
+
+```bash
+./.venv/bin/python -m newsbot --check     # the "reports" line should say OK
+sudo systemctl restart newsbot
+```
+
+The first run fills the tab with the last two weeks of reports. Only reports
+less than 36 hours old trigger a notification (`reports.max_age_hours`).
 
 ---
 
-## When a question finds nothing
+## Running it long-term
 
-News APIs match words that literally appear in headlines, and they AND the
-terms together. That works for named things - "Manchester United", "Starship"
-- and fails for themes, because no headline contains "top businesses invest".
-Since the intent parser compresses whatever you typed into a short phrase,
-thematic questions used to come back empty and fall straight through to the
-model's own knowledge.
+### Automatic updates
 
-A question that finds nothing now widens along two axes:
+`deploy.sh` pulls new commits from `origin/main`, reinstalls dependencies, and
+restarts the service. It is fast-forward only and stays quiet when there's
+nothing new. A systemd timer can run it every 15 minutes:
 
-1. **Time** - the last 24h, then the week, then the month. Right for a real
-   subject with sparse coverage.
-2. **The query itself** - the model rewrites it into terms that actually
-   appear in coverage: *"where are corporations investing"* becomes
-   `Nvidia data center spending`, `capital expenditure earnings`. Each
-   candidate is tried against the month.
+```bash
+# Let deploy.sh restart the service without a password
+echo "$USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart newsbot" | \
+  sudo tee /etc/sudoers.d/newsbot-deploy
+sudo chmod 440 /etc/sudoers.d/newsbot-deploy
 
-The rewrite is only requested once the original query has already come up
-empty, so it costs nothing on the common path. Without a model (Ollama down,
-no API key) it falls back to dropping filler words and ORing what is left.
+sed "s|/home/john/Documents/news_bot|$PWD|g; s|^User=john|User=$USER|" \
+  scripts/newsbot-update.service | sudo tee /etc/systemd/system/newsbot-update.service >/dev/null
+sudo cp scripts/newsbot-update.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now newsbot-update.timer
 
-When a rewrite is what found the articles, the reply says so - otherwise
-results that look tangential read as a bug rather than a broadened search.
-Only after all of that does it answer from background knowledge.
+systemctl list-timers newsbot-update.timer   # when it last ran / runs next
+journalctl -t newsbot-deploy -f              # what it did
+```
 
-## Project layout
+Run `./scripts/deploy.sh` by hand to deploy immediately. `.env`,
+`config.yaml` and `data/` are gitignored, so a pull never touches your setup.
+If a deploy reports *"git pull was not a fast-forward"*, something was edited
+directly on the Pi: run `git status` there, then commit it properly or
+`git stash` it.
+
+### Backups
+
+Git covers the code but deliberately not the things that would hurt to lose:
+`.env`, `config.yaml`, `data/newsbot.db` (users, topics, history) and the
+Drive service account key.
+
+```bash
+./scripts/backup.sh               # → ~/newsbot-backups/, keeps the last 14
+./scripts/backup.sh /mnt/usb      # or somewhere else
+```
+
+The database is snapshotted through SQLite's backup API, so a backup taken
+mid-write is still consistent. **The archive contains your keys in
+plaintext** and is written `0600`. Copy it off the Pi, because an SD card
+that dies takes its own backups with it:
+
+```bash
+scp <user>@<pi-hostname>.local:~/newsbot-backups/newsbot-*.tar.gz .
+```
+
+To restore onto a fresh install, clone and run `setup.sh`, then unpack over
+the top:
+
+```bash
+tar -xzf newsbot-YYYYMMDD-HHMMSS.tar.gz
+mkdir -p data && mv newsbot.db data/
+[ -f google-service-account.json ] && mv google-service-account.json data/
+sudo systemctl restart newsbot
+```
+
+To back up weekly, add `0 4 * * 0 /path/to/news_bot/scripts/backup.sh` to
+`crontab -e`.
+
+---
+
+## Security notes
+
+- **Secrets stay local.** API keys live in `.env`; the database, the Drive
+  key and the push-notification key live in `data/`. All are gitignored.
+- **The web server is plain HTTP on `0.0.0.0:8080`.** It is meant for your
+  home network or a Tailscale tailnet. Don't port-forward it to the internet.
+  If you want a public page, put it behind a tunnel with real authentication.
+- **Phone access is by pairing.** Personal endpoints (`/api/me/…`) need a
+  device paired through `/app`; `/app unpair` revokes every device.
+- **The bot is private by default.** Strangers can only send an access
+  request, which an admin approves or denies.
+
+---
+
+## Project layout and tests
 
 ```
 newsbot/
 ├── __main__.py      entry point, wiring, --check
 ├── config.py        config.yaml + .env, with ${VAR} interpolation
-├── db.py            SQLite: users, topics, sent articles, quota
-├── brain.py         all prompts: intent, summaries, timezone lookup
-├── handlers.py      Telegram handlers, onboarding, commands
-├── digest.py        building and sending digests
+├── db.py            SQLite: users, topics, sent articles, votes, quota
+├── brain.py         the prompts: intent, summaries, query rewrites, timezones
+├── handlers.py      Telegram handlers, onboarding, commands, access requests
+├── engine.py        the hourly collect → score → rank news engine
+├── ranking.py       story scoring and merging duplicate coverage
+├── digest.py        building and sending briefings
 ├── scheduler.py     one daily job per user, in their timezone
-├── formatting.py    Telegram HTML, message splitting
-├── reports.py       Drive folder -> the app's Reports tab and notifications
-├── timezones.py     coordinates -> IANA zone, offline
+├── formatting.py    Telegram HTML and message splitting
+├── space.py         launches (Launch Library 2) and satellites (CelesTrak)
+├── webapp.py        HTTP server for the globe, the app and its API
+├── appservice.py    what the Orbital app reads and writes
+├── push.py          Web Push notifications (VAPID)
+├── reports.py       Google Drive folder → Reports tab
+├── timezones.py     coordinates → IANA timezone, offline
 ├── ai/              anthropic | ollama, behind one interface
-└── news/            gnews | rss, behind one fetcher
+├── news/            gnews | rss, behind one fetcher
+└── web/             the globe (index.html) and Orbital (app/)
+scripts/             setup, deploy, backup, systemd units
+tests/               unit tests, no keys or network needed
 ```
-
-Run the tests (no keys or network needed):
 
 ```bash
 ./.venv/bin/python -m unittest discover -s tests -t .
@@ -336,173 +464,35 @@ Run the tests (no keys or network needed):
 
 ## Troubleshooting
 
-**"This is a private bot"** - your ID isn't whitelisted. The message includes
-your ID; add it to `config.yaml` and restart.
+**"This is a private bot"**: you haven't been let in yet. The owner has been
+sent your request; once they tap Approve, send `/start`.
 
-**No digest arrived** - check `/status` for your time and timezone, confirm the
-digest isn't paused, and look at `journalctl -u newsbot -e`. Jobs are
-rescheduled on every start, so a restart fixes a stuck schedule.
+**No briefing arrived**: check `/status` for your time and timezone, make sure
+it isn't paused, and look at `journalctl -u newsbot -e`. Jobs are rescheduled
+on every start, so a restart fixes a stuck schedule.
 
-**"Nothing new today"** - every article found was already sent to you. Verify
-with `/search <topic>`, which ignores the dedupe filter.
+**"Nothing new today"**: every article found had already been sent to you.
+`/search <topic>` ignores the dedupe filter, so use it to check.
 
-**The location button doesn't appear** - Telegram Desktop doesn't support it.
-Type a city name instead, or use `/timezone Europe/Amsterdam`.
+**Summaries look like raw blurbs**: the AI call failed and the bot fell back.
+The logs give the reason (bad key, rate limit, Ollama not running).
 
-**`timezonefinder` won't install** - skip it. The bot detects its absence and
-asks for a city name instead; nothing else changes.
+**The location button doesn't appear**: Telegram Desktop doesn't support it.
+Type a city, or use `/timezone Europe/Amsterdam`.
 
-**No report arrived** - run `python -m newsbot --check`: the `reports` line
-names the problem (key file missing, folder not shared with the service
-account, google-auth not installed). Then
-`journalctl -u newsbot -e | grep -i report`. A 404 from Drive almost always
-means the folder isn't shared with the service account's email.
+**`timezonefinder` won't install**: skip it. The bot notices it's missing and
+asks for a city name instead.
 
-**Summaries look like raw blurbs** - the model call failed and the bot fell
-back. Check the logs for the reason (bad key, rate limit, Ollama not running).
+**The app won't install or notify**: it has to be opened over HTTPS (see
+[Orbital](#orbital-the-phone-app)). If `pywebpush` failed to install, the app
+still works, just without notifications.
+
+**No report arrived**: run `python -m newsbot --check`; the `reports` line
+names the problem. A 404 from Drive almost always means the folder isn't
+shared with the service account's email.
 
 ---
 
-## Rocket launches and the globe
+## License
 
-The bot also tracks rocket launches (The Space Devs' Launch Library 2) and
-satellites (CelesTrak), both free and keyless.
-
-- `/launches` - the next five launches, in your timezone, with livestream links.
-- `/launchalerts` - toggle reminders a day and 30 minutes before liftoff
-  (launches marked Go or TBC; a launch that slips is reminded again).
-
-**The globe** is served by the bot itself at `http://<pi-hostname>.local:8080`
-on your home network - no extra service. It opens in a see-through amber "hologram" view (Real view button switches
-to satellite imagery). It is a CesiumJS globe on the real
-WGS84 ellipsoid (flattened at the poles), with day/night lighting and
-controls: scroll wheel zooms, middle-drag (or Shift+left-drag on a
-touchpad) pans the view like a 2D map, right-drag rotates the globe like a desk globe (sideways spins it
-about the poles, up/down tips it north/south, north stays up), Ctrl+right-drag
-tilts the view, and ⌖ Center (or the C key) puts the globe back in the
-middle, north up. The **Mouse:** button switches to Google Earth's layout
-instead (left-drag moves, right-drag or wheel zooms, middle-drag or
-Shift+left-drag rotates and tilts, Ctrl+left-drag looks around); the choice
-is remembered. On a phone, one finger pans and pinch zooms. The globe is
-solid so the far side doesn't distract; the X-ray button makes it see-through. Left-click inspects: a country or ocean
-shows its latest news, a satellite shows its orbit and news about it, a
-launch pad shows the launch and the rocket's specs and news. The layer
-buttons (Sats, Launches, Grid, Rings, Borders) hide things you don't want.
-Globe news comes from Google News RSS via `/api/news`, cached 15 minutes -
-it never spends the GNews allowance the digests use. Launches in the next 72 hours get a
-card pinned above their pad with a live countdown and link (pulsing red in the
-last hour). Satellites fly on their actual orbits, propagated with SGP4 in the
-browser; tap one for altitude, speed and its full orbit, or Follow it. The
-1x/60x/600x buttons speed time up.
-
-On a phone, open the page and use "Add to Home Screen" to get it as an app.
-The page loads its 3D engine from cdn.jsdelivr.net, so the viewing device
-needs internet (the Pi only serves the page and data).
-
-Settings live under `space:` in `config.yaml` (see `config.example.yaml`);
-without that section the defaults apply.
-
-## The phone app (Orbital)
-
-`/app` on the Pi is an installable app: upcoming launches with countdowns,
-Watch / launch-page / calendar buttons, your news briefing and topics, and
-notifications for launch reminders and the daily briefing.
-
-**Make it reachable over https** (Android only installs apps and allows
-notifications over https). With Tailscale on the Pi and the phone:
-
-```bash
-sudo tailscale serve --bg 8080          # https://<pi-name>.<tailnet>.ts.net
-```
-
-MagicDNS and HTTPS certificates must be on in the Tailscale admin console
-(DNS page). Then put that address in `config.yaml` so Telegram links use it:
-
-```yaml
-space:
-  public_url: https://jb.your-tailnet.ts.net
-```
-
-**Pair your phone:** send `/app` to the bot, open the link on the phone, then
-Chrome ⋮ → Install app, and switch on notifications in its Settings tab.
-`/app unpair` signs every phone out.
-
-**Calendar:** every launch has "+ Google Calendar" and "+ .ics" buttons. The
-whole schedule is a feed at `/calendar.ics`. Google Calendar can only
-subscribe to a public link; to allow that for the feed alone:
-
-```bash
-sudo tailscale funnel --bg --https=8443 --set-path=/calendar.ics http://127.0.0.1:8080/calendar.ics
-```
-
-then add `https://<pi-name>.<tailnet>.ts.net:8443/calendar.ics` in Google
-Calendar → Other calendars → From URL. Google refreshes it every few hours.
-
-## Reports from Google Drive
-
-Every morning a cloud routine saves a briefing (the Kalulu morning briefing)
-as a `.md` file in a Google Drive folder. The bot checks that folder every 15
-minutes and puts anything new in the **Reports** tab of the Orbital app, with
-a phone notification that opens straight to it (switch it off under
-Settings → Reports). Nothing goes to Telegram. A copy of each report is also
-kept in `data/reports/`. This replaces the standalone `briefing_relay.py` +
-cron setup.
-
-Only the bot's owner sees the Reports tab (friends you've made admins
-don't). To let others read them, list their Telegram user ids under
-`reports.chat_ids`. The first time it runs, the tab is filled with the last
-two weeks of reports from the folder.
-
-**1. Give the Pi read access to Drive** (one time, ~10 minutes). The Pi uses
-a *service account*: a Google identity with no browser login, which suits a
-headless Pi.
-
-1. At <https://console.cloud.google.com/>, create a project (e.g. `kalulu-relay`).
-2. **APIs & Services → Library** → enable **Google Drive API**.
-3. **IAM & Admin → Service Accounts → Create**, name it `pi-relay`, skip the roles.
-4. Open it → **Keys → Add key → JSON**. Copy the download to the Pi as
-   `~/Documents/news_bot/data/google-service-account.json` and
-   `chmod 600` it. (`data/` is git-ignored; `backup.sh` includes the key.)
-5. Copy the account's email (`pi-relay@…iam.gserviceaccount.com`). In Drive,
-   right-click the **Reports** folder → **Share** → paste it → **Viewer**.
-   It can see that folder and nothing else.
-
-**2. Point the bot at the folder.** In `.env`, set the folder id - the long
-string at the end of the folder's URL:
-
-```
-GDRIVE_REPORTS_FOLDER_ID=1AbC...
-```
-
-**3. Install and check:**
-
-```bash
-./.venv/bin/pip install -r requirements.txt     # adds google-auth
-./.venv/bin/python -m newsbot --check           # "reports  OK (N in the Drive folder; shown in the app to <id>)"
-sudo systemctl restart newsbot
-```
-
-About a minute after the restart the Reports tab fills up. Only reports less
-than 36 hours old ring the phone (`reports.max_age_hours`), so switching this
-on doesn't set off a notification for every old briefing.
-
-**If you ran the standalone relay from cron**, remove that `crontab -e` line,
-or reports keep arriving on Telegram too.
-
-## How news is chosen
-
-Every hour the news engine (`newsbot/engine.py`):
-
-1. **Collects** into a pool: Google News RSS for each topic's query and its
-   name, over 48 hours, plus the site feeds under `news.engine.feeds`
-   (BBC, Ars Technica, SpaceNews, The Verge and the New York Times by default).
-2. **Scores** each new story with the AI: which of your topics it belongs
-   to, relevance 0-10 and impact 0-10, with a few words of why. Your 👍/👎 in
-   the app are shown to the AI as examples of your taste.
-3. **Ranks** by relevance, impact, how many outlets carry the story, source
-   credibility, freshness and your votes for that outlet; duplicate coverage
-   of one event is merged.
-
-The morning briefing is the best unsent stories (max 3 per topic). Stories
-scored as major arrive as a notification straight away, at most 3 a day.
-The app's **Top now** view shows the best of the last 24 hours.
+[MIT](LICENSE)
