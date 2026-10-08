@@ -16,7 +16,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-CONTACT = "https://github.com/barendse-john/orbital"
+CONTACT = "https://github.com/barendse-john/Orbital"
 
 
 class Pusher:

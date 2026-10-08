@@ -76,8 +76,8 @@ orbits ([CelesTrak](https://celestrak.org)) need no keys.
 ### 2. Install
 
 ```bash
-git clone https://github.com/barendse-john/orbital.git
-cd orbital
+git clone https://github.com/barendse-john/Orbital.git
+cd Orbital
 ./scripts/setup.sh
 ```
 
@@ -410,7 +410,7 @@ mkdir -p data && mv newsbot.db data/
 sudo systemctl restart newsbot
 ```
 
-To back up weekly, add `0 4 * * 0 /path/to/orbital/scripts/backup.sh` to
+To back up weekly, add `0 4 * * 0 /path/to/Orbital/scripts/backup.sh` to
 `crontab -e`.
 
 ---
