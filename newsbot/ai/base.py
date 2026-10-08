@@ -2,7 +2,7 @@
 
 Backends are deliberately dumb: text in, text out. All prompt logic lives in
 newsbot/brain.py, so switching between Anthropic and Ollama changes nothing
-about how the bot behaves.
+about how Orbital behaves.
 """
 
 from __future__ import annotations

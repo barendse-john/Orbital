@@ -236,13 +236,14 @@ function toast(msg) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("on"), 2600);
 }
 
-// Pairing: /app in Telegram sends a link ending in #pair=<token>.
+// Pairing: `python -m newsbot pair` on the Pi prints a link ending in
+// #pair=<token>. Opening it here stores the token; that is the whole login.
 (function pairFromLink() {
   const m = location.hash.match(/pair=([\w-]+)/);
   if (m) {
     store.set("token", m[1]);
     history.replaceState(null, "", "/app/#settings");
-    setTimeout(() => toast("Paired with Telegram ✓"), 300);
+    setTimeout(() => toast("Paired ✓"), 300);
   }
 })();
 const token = () => store.get("token", "");
@@ -412,15 +413,40 @@ document.querySelectorAll("#filters button").forEach(b => b.onclick = () => { fi
 let me = null, pending = null;     // pending topic interview: {label, transcript, question}
 
 function pairCard() {
-  return el("div", { class: "card empty" }, el("b", null, "Pair with Telegram"),
-    "Send ", el("span", { class: "mono" }, "/app"), " to the bot and open the link it replies with on this phone. ",
-    "That signs the app in to your topics, briefing and notifications.");
+  const input = el("input", { type: "text", placeholder: "…or paste the link here", autocomplete: "off" });
+  return el("div", { class: "card empty" }, el("b", null, "Pair this phone"),
+    "On the Pi, run ", el("span", { class: "mono" }, "python -m newsbot pair"),
+    " and open the link it prints on this phone, or scan its QR code. ",
+    "That signs the app in to your topics, briefing and notifications.",
+    el("div", { style: "display:flex;gap:8px;margin-top:12px" }, input,
+      el("button", { class: "btn primary", onclick: () => pairWith(input.value) }, "Pair")));
+}
+
+async function pairWith(text) {
+  const m = (text || "").match(/pair=([\w-]+)/) || (text || "").trim().match(/^([\w-]{20,})$/);
+  if (!m) return toast("That doesn't look like a pairing link");
+  store.set("token", m[1]);
+  await loadMe();
+  if (!me) return toast("That link didn't work - run pair again");
+  toast("Paired ✓");
+  show(store.get("tab", "launches"));
+}
+
+function phoneTimezone() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) { return ""; }
 }
 
 async function loadMe() {
   if (!token()) { me = null; return; }
-  try { me = await api("/api/me"); setLive(true); }
-  catch (e) { if (e.status === 401) { store.set("token", ""); toast("Signed out - pair again with /app"); } me = null; }
+  try {
+    me = await api("/api/me"); setLive(true);
+    // First sign-in: the briefing needs a timezone, and the phone knows it.
+    if (!me.timezone && phoneTimezone()) {
+      try { me = await api("/api/me/settings", { method: "POST", body: { timezone: phoneTimezone() } }); }
+      catch (e) { /* set it in Settings instead */ }
+    }
+  }
+  catch (e) { if (e.status === 401) { store.set("token", ""); toast("Signed out - pair this phone again"); } me = null; }
   finally { $("navReports").hidden = !(me && me.reports); }
 }
 
@@ -531,7 +557,7 @@ async function submitTopic(label) {
 }
 
 async function refreshBriefing() {
-  if (!token()) return toast("Pair with Telegram first");
+  if (!token()) return toast("Pair this phone first");
   toast("Fetching your news…");
   try { const r = await api("/api/me/briefing/refresh", { method: "POST", body: {} });
     toast(r.new ? `${r.new} new stories` : "Nothing new since the last briefing"); }
@@ -546,7 +572,7 @@ async function renderReports() {
   body.append(el("h2", null, "Reports"), el("div", { class: "skeleton" }), el("div", { class: "skeleton" }));
   let reports = [], problem = "";
   try { reports = (await api("/api/me/reports")).reports || []; }
-  catch (e) { problem = e.status === 403 ? "Reports from Drive go to the bot's owner only." : "Couldn't reach the Pi."; }
+  catch (e) { problem = e.status === 403 ? "Reports from Google Drive aren't set up on the Pi - see the README." : "Couldn't reach the Pi."; }
   body.replaceChildren(el("h2", null, "Reports"));
   if (problem) { body.append(el("div", { class: "card empty" }, el("b", null, "No reports here"), problem)); return; }
   if (!reports.length) {
@@ -572,7 +598,7 @@ async function openReport(id) {
   try { r = await api("/api/me/reports/" + encodeURIComponent(id)); }
   catch (e) { openSheet(el("div", { class: "empty" }, el("b", null, "Couldn't open this report"), e.message)); return; }
   // The Pi sends the report as a small, already-escaped HTML subset
-  // (b, i, code and http(s) links) - the same one Telegram gets.
+  // (b, i, code and http(s) links).
   const text = el("div", { class: "report" });
   text.innerHTML = (r.blocks || []).map((b) => `<p>${b}</p>`).join("");
   text.querySelectorAll("a").forEach((a) => { a.target = "_blank"; a.rel = "noopener"; });
@@ -650,17 +676,19 @@ async function renderSettings() {
   const p = me.prefs;
   body.append(el("h2", null, "Launch reminders"), el("div", { class: "group" },
     setting("Remind me", "A day before and 30 min before confirmed launches", toggle(me.launch_alerts, (v, i) => save({ launch_alerts: v }, i))),
-    setting("In the app", null, toggle(p.launch_push, (v, i) => save({ launch_push: v }, i), !me.launch_alerts)),
-    setting("On Telegram", null, toggle(p.launch_telegram, (v, i) => save({ launch_telegram: v }, i), !me.launch_alerts))));
+    setting("Notify me", null, toggle(p.launch_push, (v, i) => save({ launch_push: v }, i), !me.launch_alerts))));
 
   const time = el("input", { type: "time", value: me.digest_time || "08:00", style: "flex:none;width:150px" });
   time.addEventListener("change", () => save({ digest_time: time.value }));
+  const tz = phoneTimezone();
+  const tzCtl = tz && tz !== me.timezone
+    ? el("button", { class: "btn", onclick: async () => { await save({ timezone: tz }); renderSettings(); } }, `Use ${tz}`) : "";
   body.append(el("h2", null, "Daily briefing"), el("div", { class: "group" },
-    setting("Daily briefing", me.timezone ? `In your timezone (${me.timezone})` : "Set your timezone in Telegram first",
+    setting("Daily briefing", "Your best stories, once a day",
       toggle(me.digest_enabled, (v, i) => save({ digest_enabled: v }, i))),
     setting("Time", null, time),
-    setting("Notify me in the app", null, toggle(p.digest_push, (v, i) => save({ digest_push: v }, i))),
-    setting("Also send to Telegram", "Turn off to move your news to the app only", toggle(p.digest_telegram, (v, i) => save({ digest_telegram: v }, i))),
+    setting("Timezone", me.timezone || "Not set yet", tzCtl),
+    setting("Notify me", null, toggle(p.digest_push, (v, i) => save({ digest_push: v }, i))),
     setting("Breaking news", "Major stories on your topics as they happen (max 3 a day)", toggle(p.breaking_push !== false, (v, i) => save({ breaking_push: v }, i)))));
 
   if (me.reports) body.append(el("h2", null, "Reports"), el("div", { class: "group" },
@@ -673,7 +701,7 @@ async function renderSettings() {
     setting("Single launches", "Each launch has + Google Calendar and + .ics buttons", "")));
 
   body.append(el("h2", null, "Account"), el("div", { class: "group" },
-    setting(`Signed in as ${me.name || "you"}`, config.bot ? `via @${config.bot}` : null,
+    setting(`Signed in as ${me.name || "you"}`, "Sign every phone out with: python -m newsbot unpair",
       el("button", { class: "btn", onclick: () => { if (confirm("Sign this phone out?")) { store.set("token", ""); me = null; renderSettings(); renderNews(); } } }, "Sign out"))));
 }
 

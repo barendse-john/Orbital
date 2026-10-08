@@ -1,15 +1,11 @@
 """Narrowing a vague topic: the question, the answer, and the query it makes."""
 
 import json
-import tempfile
 import unittest
-from pathlib import Path
 
 from newsbot.ai.base import AIBackend, AIError
-from newsbot.brain import TopicPlan, plain_query, plan_topic, query_is_sane, quote
-from newsbot.config import Config, DigestConfig, GNewsConfig, NewsConfig, TelegramConfig
-from newsbot.db import Database
-from newsbot.handlers import STAGE, STAGE_TIME, BotHandlers, _is_skip
+from newsbot.brain import (TopicPlan, extract_json, plain_query, plan_topic,
+                           query_is_sane, quote)
 
 
 class ScriptedAI(AIBackend):
@@ -103,182 +99,13 @@ class PlainQueryTests(unittest.TestCase):
     def test_words_after_a_negation_are_not_searched_for(self):
         self.assertNotIn("crypto", plain_query("finance", "markets, not crypto"))
 
-    def test_skip_answers_are_recognised(self):
-        for text in ("skip", "Skip!", "whatever", "no preference"):
-            self.assertTrue(_is_skip(text), text)
-        self.assertFalse(_is_skip("markets and rates"))
 
-
-# --------------------------------------------------------------------------
-# The Telegram round trip, with just enough of PTB faked to drive it.
-# --------------------------------------------------------------------------
-
-class FakeMessage:
-    def __init__(self, text=""):
-        self.text = text
-        self.replies = []
-
-    async def reply_text(self, text, **kwargs):
-        self.replies.append(text)
-
-
-class FakeUpdate:
-    def __init__(self, user_id, text=""):
-        self.effective_user = type("U", (), {
-            "id": user_id, "username": "john", "first_name": "John"})()
-        self.effective_message = FakeMessage(text)
-
-
-class FakeBot:
-    async def send_chat_action(self, *a, **kw):
-        pass
-
-    async def send_message(self, *a, **kw):
-        pass
-
-
-class FakeContext:
-    def __init__(self, args=None):
-        self.bot = FakeBot()
-        self.user_data = {}
-        self.args = args or []
-
-
-class OnboardingTests(unittest.IsolatedAsyncioTestCase):
-    """A new person gets one instruction, not the manual."""
-
-    async def asyncSetUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.db = Database(Path(self.tmp.name) / "t.db")
-        self.db.connect()
-        self.cfg = Config(
-            telegram=TelegramConfig(token="t", whitelist=[7]),
-            news=NewsConfig(gnews=GNewsConfig(api_key="")),
-            digest=DigestConfig(default_time="08:00"),
-        )
-        self.bot = BotHandlers(self.cfg, self.db, ScriptedAI({}), None, None,
-                               _NullScheduler())
-        await self.db.ensure_user(7, "john", "John")
-
-    async def asyncTearDown(self):
-        self.db.close()
-        self.tmp.cleanup()
-
-    async def test_finishing_setup_does_not_dump_every_command(self):
-        context = FakeContext()
-        context.user_data[STAGE] = STAGE_TIME
-        await self.db.set_timezone(7, "Europe/Amsterdam")
-        update = FakeUpdate(7, "10:00")
-        await self.bot.on_text(update, context)
-
-        body = update.effective_message.replies[-1]
-        self.assertIn("All set", body)
-        self.assertIn("Manchester United", body)
-        self.assertIn("/help", body)
-        for command in ("/topics", "/retune", "/timezone", "/pause"):
-            self.assertNotIn(command, body)
-
-    async def test_help_still_has_everything(self):
-        await self.db.set_timezone(7, "Europe/Amsterdam")
-        update = FakeUpdate(7, "/help")
-        await self.bot.cmd_help(update, FakeContext())
-        body = update.effective_message.replies[0]
-        for command in ("/topics", "/retune", "/timezone", "/pause"):
-            self.assertIn(command, body)
-
-
-class _NullScheduler:
-    def schedule(self, user):
-        return True
-
-    def cancel(self, user_id):
-        pass
-
-
-class ConversationTests(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.db = Database(Path(self.tmp.name) / "t.db")
-        self.db.connect()
-        self.cfg = Config(
-            telegram=TelegramConfig(token="t", whitelist=[7]),
-            news=NewsConfig(gnews=GNewsConfig(api_key="")),
-            digest=DigestConfig(default_time="08:00"),
-        )
-        self.ai = ScriptedAI(BROAD, NARROWED)
-        self.bot = BotHandlers(self.cfg, self.db, self.ai, fetcher=None,
-                               digest=None, scheduler=None)
-        await self.db.ensure_user(7, "john", "John")
-        await self.db.set_timezone(7, "Europe/Amsterdam")
-
-    async def asyncTearDown(self):
-        self.db.close()
-        self.tmp.cleanup()
-
-    async def _say(self, text, context=None):
-        update = FakeUpdate(7, text)
-        await self.bot.on_text(update, context or FakeContext())
-        return update.effective_message.replies
-
-    async def test_vague_topic_is_questioned_then_saved_from_the_answer(self):
-        self.ai.replies = [
-            {"action": "add_topic", "topic": "finance", "query": "finance",
-             "reply": "Following finance."},
-            BROAD,
-            NARROWED,
-        ]
-        asked = await self._say("i want finance news")
-        self.assertIn("central banks", asked[0])
-        self.assertEqual(await self.db.list_topics(7), [])  # nothing saved yet
-
-        saved = await self._say("markets and rates")
-        topics = await self.db.list_topics(7)
-        self.assertEqual(len(topics), 1)
-        self.assertEqual(topics[0].label, "Markets and Rates")
-        self.assertIn("central bank", topics[0].query)
-        self.assertIn("searching:", saved[0])
-
-    async def test_skip_saves_the_topic_as_stated(self):
-        self.ai.replies = [
-            {"action": "add_topic", "topic": "finance", "query": "finance",
-             "reply": "Following finance."},
-            BROAD,
-        ]
-        await self._say("i want finance news")
-        await self._say("skip")
-        topics = await self.db.list_topics(7)
-        self.assertEqual(topics[0].label, "finance")
-        self.assertEqual(topics[0].query, "finance")
-
-    async def test_a_command_abandons_the_question(self):
-        self.ai.replies = [
-            {"action": "add_topic", "topic": "finance", "query": "finance",
-             "reply": "ok"},
-            BROAD,
-        ]
-        await self._say("i want finance news")
-        self.assertIsNotNone(await self.db.get_pending_topic(7))
-        await self._say("/topics")
-        # The question is dropped rather than swallowing an unrelated command.
-        self.assertIsNone(await self.db.get_pending_topic(7))
-        self.assertEqual(await self.db.list_topics(7), [])
-
-    async def test_retune_rewrites_an_existing_topic_without_renaming_it(self):
-        await self.db.add_topic(7, "finance", "finance")
-        self.ai.replies = [BROAD, NARROWED]
-        update = FakeUpdate(7)
-        await self.bot.cmd_retune(update, FakeContext(args=["finance"]))
-        self.assertIn("central banks", update.effective_message.replies[0])
-
-        await self._say("markets and rates")
-        topics = await self.db.list_topics(7)
-        self.assertEqual(len(topics), 1)
-        self.assertEqual(topics[0].label, "finance")  # their word, kept
-        self.assertIn("central bank", topics[0].query)
-
-    async def test_a_stale_question_is_forgotten(self):
-        await self.db.set_pending_topic(7, "finance", "which bit?")
-        self.assertIsNone(await self.db.get_pending_topic(7, max_age_minutes=0))
+class JSONTests(unittest.TestCase):
+    def test_handles_fences_and_chatter(self):
+        self.assertEqual(extract_json('```json\n{"a": 1}\n```'), {"a": 1})
+        self.assertEqual(extract_json('Sure! {"a": 1} hope that helps'), {"a": 1})
+        self.assertEqual(extract_json('["one", "two"]'), ["one", "two"])
+        self.assertIsNone(extract_json("no json here"))
 
 
 if __name__ == "__main__":

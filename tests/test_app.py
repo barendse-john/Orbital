@@ -17,13 +17,12 @@ from newsbot.webapp import Ctx, start_web
 
 class FakeDigest:
     def __init__(self):
-        self.last_items = {}
         self.app = None
 
     async def collect(self, user):
-        self.last_items[user.user_id] = [{"topic": "Space", "title": "Starship flies",
-                                          "url": "https://ex.com/s", "source": "Ex",
-                                          "summary": "", "published": "", "image": ""}]
+        return [{"topic": "Space", "title": "Starship flies",
+                 "url": "https://ex.com/s", "source": "Ex",
+                 "summary": "", "published": "", "image": ""}]
 
 
 class AppApiTests(unittest.TestCase):
@@ -38,7 +37,7 @@ class AppApiTests(unittest.TestCase):
         self.app = AppService(self.db, None, FakeDigest(), self.pusher, "https://jb.ts.net")
         space = SpaceService(SpaceConfig(), Path(self.tmp.name) / "c.json")
         self.server = start_web(space, "127.0.0.1", 0,
-                                ctx=Ctx(space, None, self.app, self.loop, "https://jb.ts.net", "bot"))
+                                ctx=Ctx(space, None, self.app, self.loop, "https://jb.ts.net"))
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
         self.token = self.aw(self.app.pair(7))
 
@@ -69,17 +68,31 @@ class AppApiTests(unittest.TestCase):
         code, me = self.call("GET", "/api/me", token=self.token)
         self.assertEqual((code, me["name"]), (200, "John"))
 
+    def test_only_the_owner_can_sign_in(self):
+        # A friend's phone paired in the Telegram days stops working.
+        self.aw(self.db.ensure_user(99, "friend", "Friend"))
+        friend = self.aw(self.app.pair(99))
+        self.assertEqual(self.call("GET", "/api/me", token=friend)[0], 401)
+
     def test_settings_validate_and_persist(self):
         code, _ = self.call("POST", "/api/me/settings", {"digest_time": "25:00"}, self.token)
         self.assertEqual(code, 400)
         code, me = self.call("POST", "/api/me/settings",
-                             {"digest_time": "7:05", "digest_telegram": False,
+                             {"digest_time": "7:05", "digest_push": False,
                               "launch_alerts": True}, self.token)
         self.assertEqual(code, 200)
         self.assertEqual(me["digest_time"], "07:05")
-        self.assertFalse(me["prefs"]["digest_telegram"])
+        self.assertFalse(me["prefs"]["digest_push"])
         self.assertTrue(me["launch_alerts"])
-        self.assertFalse(self.aw(self.app.wants_telegram_digest(7)))
+        self.assertEqual(self.call("POST", "/api/me/settings",
+                                   {"digest_telegram": False}, self.token)[0], 400)
+
+    def test_the_phone_sets_the_timezone(self):
+        code, _ = self.call("POST", "/api/me/settings", {"timezone": "Mars/Base"}, self.token)
+        self.assertEqual(code, 400)
+        code, me = self.call("POST", "/api/me/settings",
+                             {"timezone": "Europe/Amsterdam"}, self.token)
+        self.assertEqual((code, me["timezone"]), (200, "Europe/Amsterdam"))
 
     def test_topics_without_a_model_fall_back_to_a_plain_query(self):
         code, r = self.call("POST", "/api/me/topics", {"label": "Rocket Lab"}, self.token)

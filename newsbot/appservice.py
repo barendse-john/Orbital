@@ -1,12 +1,13 @@
 """Everything the phone app does, as plain async methods.
 
 The web server runs in its own threads and hands these coroutines to the
-bot's event loop, so the app shares the bot's database, news fetcher, AI
+service's event loop, so the app shares the database, news fetcher, AI
 backend and scheduler rather than duplicating any of them.
 
-Pairing: /app in Telegram creates a random token and replies with a link
-carrying it; the app keeps the token and sends it with every request. The
-token IS the login, which is why it's long and why /app unpair revokes them.
+Pairing: `python -m newsbot pair` on the Pi creates a random token and prints
+a link (and QR code) carrying it; the app keeps the token and sends it with
+every request. The token IS the login, which is why it's long and why
+`python -m newsbot unpair` revokes them all. Only the owner's tokens work.
 """
 
 from __future__ import annotations
@@ -16,8 +17,10 @@ import re
 import secrets
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from .brain import plan_topic, plain_query, query_is_sane
+from .db import PREF_KEYS
 from .reports import (md_to_html_blocks, report_preview, report_summary,
                       report_title)
 
@@ -40,7 +43,7 @@ class AppService:
         self.digest = digest
         self.pusher = pusher
         self.globe_url = globe_url
-        self.scheduler = None            # attached once the bot is running
+        self.scheduler = None            # attached once the service is running
         self.engine = None               # NewsEngine, attached in __main__
         self.relay = None                # ReportRelay, attached in __main__
         self._last_refresh: dict[int, float] = {}
@@ -57,8 +60,10 @@ class AppService:
 
     async def user_for(self, token: str) -> int:
         user_id = await self.db.app_token_user(token)
-        if user_id is None:
-            raise AppError("Not paired - send /app to the bot on Telegram.", 401)
+        # Orbital serves one person: a token left over from a friend's phone
+        # in the Telegram days no longer signs anyone in.
+        if user_id is None or user_id != await self.db.owner_id():
+            raise AppError("Not paired - run `python -m newsbot pair` on the Pi.", 401)
         return user_id
 
     # --------------------------------------------------------- settings
@@ -81,9 +86,14 @@ class AppService:
     async def update_settings(self, user_id: int, changes: dict) -> dict:
         user = await self.db.get_user(user_id)
         if user is None:
-            raise AppError("Say hi to the bot on Telegram first.", 404)
+            raise AppError("No account yet - run `python -m newsbot pair` on the Pi.", 404)
         for key, value in (changes or {}).items():
-            if key == "launch_alerts":
+            if key == "timezone":
+                if not isinstance(value, str) or not _valid_timezone(value):
+                    raise AppError("Unknown timezone.")
+                await self.db.set_timezone(user_id, value)
+                await self._reschedule(user_id)
+            elif key == "launch_alerts":
                 await self.db.set_launch_alerts(user_id, bool(value))
             elif key == "digest_enabled":
                 await self.db.set_digest_enabled(user_id, bool(value))
@@ -94,8 +104,7 @@ class AppService:
                 h, m = value.split(":")
                 await self.db.set_digest_time(user_id, f"{int(h):02d}:{m}")
                 await self._reschedule(user_id)
-            elif key in ("digest_telegram", "digest_push", "launch_telegram",
-                         "launch_push", "breaking_push", "report_push"):
+            elif key in PREF_KEYS:
                 await self.db.set_app_pref(user_id, key, bool(value))
             else:
                 raise AppError(f"Unknown setting {key!r}.")
@@ -106,9 +115,6 @@ class AppService:
             user = await self.db.get_user(user_id)
             if user:
                 self.scheduler.schedule(user)
-
-    async def wants_telegram_digest(self, user_id: int) -> bool:
-        return (await self.db.app_prefs(user_id))["digest_telegram"]
 
     # ---------------------------------------------------------- news
 
@@ -123,9 +129,7 @@ class AppService:
         if user is None or not await self.db.list_topics(user_id):
             raise AppError("Add a topic first.", 400)
         self._last_refresh[user_id] = time.time()
-        self.digest.last_items.pop(user_id, None)
-        await self.digest.collect(user)
-        items = self.digest.last_items.pop(user_id, [])
+        items = await self.digest.collect(user)
         if items:
             await self.db.save_briefing(user_id, items)
         return {"new": len(items), "briefings": await self.db.briefings(user_id)}
@@ -157,22 +161,12 @@ class AppService:
         await self.engine.vote(user_id, key, vote)
         return {"ok": True}
 
-    async def breaking_news(self, user_id: int, story: dict, bot=None) -> None:
-        prefs = await self.db.app_prefs(user_id)
-        if prefs.get("breaking_push", True):
+    async def breaking_news(self, user_id: int, story: dict) -> None:
+        if (await self.db.app_prefs(user_id)).get("breaking_push", True):
             await self.push(user_id, {
                 "title": f"⚡ {story['topic']}", "body": story["title"],
                 "url": "/app/#news", "tag": f"news-{story['key'][:40]}",
                 "link": story["url"]})
-        if bot is not None and prefs.get("digest_telegram", True):
-            from .formatting import esc
-            try:
-                await bot.send_message(
-                    user_id, f"⚡ <b>{esc(story['topic'])}</b>\n"
-                    f'<a href="{esc(story["url"])}">{esc(story["title"])}</a> - {esc(story["source"])}',
-                    parse_mode="HTML", disable_web_page_preview=True)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("Breaking news to %s on Telegram failed: %s", user_id, exc)
 
     # -------------------------------------------------------- reports
 
@@ -277,8 +271,13 @@ class AppService:
             "url": f"/app/#launch={launch.id}", "tag": f"launch-{launch.id}",
             "link": launch.link}))
 
-    async def launch_telegram(self, user_id: int) -> bool:
-        return (await self.db.app_prefs(user_id))["launch_telegram"]
+
+def _valid_timezone(name: str) -> bool:
+    try:
+        ZoneInfo(name)
+    except (KeyError, ValueError):
+        return False
+    return "/" in name or name == "UTC"
 
 
 def utc_iso() -> str:

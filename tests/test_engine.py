@@ -124,9 +124,8 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         digest = DigestService(self.db, None, None, self.cfg)
         digest.engine = self.engine
         user = await self.db.get_user(7)
-        blocks, empty, count, lead = await digest.collect(user)
-        self.assertGreater(count, 0)
-        items = digest.last_items[7]
+        items = await digest.collect(user)
+        self.assertGreater(len(items), 0)
         self.assertTrue(all("key" in i and "why" in i for i in items))
         # Everything just sent is gone from the next briefing.
         self.assertEqual(await self.engine.pick(7, 8), [])
@@ -140,7 +139,7 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         class App:
             sent = []
 
-            async def breaking_news(self, uid, story, bot):
+            async def breaking_news(self, uid, story):
                 self.sent.append(story["title"])
         self.engine.app = App()
         self.cfg.news.engine.breaking_per_day = 2

@@ -54,7 +54,7 @@ class ReportsApiTests(unittest.TestCase):
                                     "# Tuesday brief\n\n- see [doc](https://x.io/a?b=1&c=2)\n- <script>"))
         space = SpaceService(SpaceConfig(), Path(self.tmp.name) / "c.json")
         self.server = start_web(space, "127.0.0.1", 0,
-                                ctx=Ctx(space, None, self.app, self.loop, "https://jb.ts.net", "bot"))
+                                ctx=Ctx(space, None, self.app, self.loop, "https://jb.ts.net"))
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
         self.owner = self.aw(self.app.pair(7))
         self.friend = self.aw(self.app.pair(8))
@@ -80,11 +80,11 @@ class ReportsApiTests(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, json.load(e)
 
-    def test_only_recipients_see_reports(self):
+    def test_only_the_owner_sees_reports(self):
         self.assertTrue(self.call("GET", "/api/me", token=self.owner)[1]["reports"])
-        self.assertFalse(self.call("GET", "/api/me", token=self.friend)[1]["reports"])
-        self.assertEqual(self.call("GET", "/api/me/reports", token=self.friend)[0], 403)
-        self.assertEqual(self.call("GET", "/api/me/reports/f1", token=self.friend)[0], 403)
+        # A friend's phone from the Telegram days can't sign in at all.
+        self.assertEqual(self.call("GET", "/api/me/reports", token=self.friend)[0], 401)
+        self.assertEqual(self.call("GET", "/api/me/reports/f1", token=self.friend)[0], 401)
         self.assertEqual(self.call("GET", "/api/me/reports")[0], 401)
 
     def test_no_relay_means_no_reports(self):

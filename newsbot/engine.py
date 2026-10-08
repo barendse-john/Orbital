@@ -159,7 +159,6 @@ class NewsEngine:
         self.cfg = cfg                       # the whole Config
         self.ecfg = cfg.news.engine
         self.app = app
-        self.bot = None                      # set when the bot is running
         self._client: httpx.AsyncClient | None = None
         self._lock = asyncio.Lock()
         with db._lock:
@@ -203,10 +202,10 @@ class NewsEngine:
         async with self._lock:
             added = await self.collect()
             scored = 0
-            for user in await self.db.all_users():
-                if await self.db.list_topics(user.user_id):
-                    scored += await self.score_user(user.user_id)
-                    await self.breaking(user.user_id)
+            owner = await self.db.owner_id()
+            if owner is not None and await self.db.list_topics(owner):
+                scored += await self.score_user(owner)
+                await self.breaking(owner)
             await self._write("DELETE FROM pool WHERE first_seen < ?",
                               (_iso(_now() - timedelta(days=7)),))
             await self._write("DELETE FROM pool_scores WHERE scored_at < ?",
@@ -218,12 +217,12 @@ class NewsEngine:
 
     async def collect(self) -> int:
         searches: dict[str, str] = {}
-        for user in await self.db.all_users():
-            for t in await self.db.list_topics(user.user_id):
-                searches.setdefault(t.query, t.query)
-                label = t.label.strip()
-                if label and not re.search(r"\b%s\b" % re.escape(label.lower()), t.query.lower()):
-                    searches.setdefault(f'"{label}"' if " " in label else label, t.query)
+        owner = await self.db.owner_id()
+        for t in (await self.db.list_topics(owner) if owner is not None else []):
+            searches.setdefault(t.query, t.query)
+            label = t.label.strip()
+            if label and not re.search(r"\b%s\b" % re.escape(label.lower()), t.query.lower()):
+                searches.setdefault(f'"{label}"' if " " in label else label, t.query)
         found: list[tuple[Article, str]] = []
         if self.rss is not None:
             for q in searches:
@@ -438,7 +437,7 @@ class NewsEngine:
             await self._many("UPDATE pool_scores SET alerted = 1 WHERE user_id = ? AND key = ?",
                              [(user_id, k) for k in story["members"]])
             await self.db.mark_sent(user_id, [(story["key"], story["url"])])
-            await self.app.breaking_news(user_id, story, self.bot)
+            await self.app.breaking_news(user_id, story)
             sent += 1
         return sent
 

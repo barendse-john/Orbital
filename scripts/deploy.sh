@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pulls new commits from GitHub and restarts the bot if anything changed.
+# Pulls new commits from GitHub and restarts Orbital if anything changed.
 # Run manually any time, or on the newsbot-update.timer schedule.
 set -euo pipefail
 cd "$(dirname "$0")/.."

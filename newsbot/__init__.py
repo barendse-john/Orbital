@@ -1,3 +1,3 @@
-"""A personal Telegram news bot: natural-language topics, daily digests."""
+"""Orbital: a self-hosted news briefing and launch tracker for a Raspberry Pi."""
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"

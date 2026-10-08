@@ -1,15 +1,5 @@
 # Copy to config.yaml and edit. Secrets live in .env; ${VARS} are read from there.
 
-telegram:
-  token: ${TELEGRAM_BOT_TOKEN}
-  # Leave both empty and the first person to message the bot automatically
-  # becomes its owner (whitelisted + admin) - no editing this file required.
-  # Only set these if you want to hand-pick the owner in advance, or you're
-  # restoring a bot onto a fresh database and want to skip re-claiming it.
-  whitelist: []
-  # Admins can run /allow and /deny to add or remove people at runtime.
-  admins: []
-
 ai:
   # anthropic | ollama  -- switch freely, restart to apply
   backend: anthropic
@@ -30,8 +20,8 @@ news:
   country: us
   lookback_hours: 24
   max_articles_per_topic: 5
-  # Ceiling across all topics for one digest - picked round-robin so every
-  # topic gets a look-in. Keeps the digest to a single Telegram message.
+  # Ceiling across all topics for one briefing when the news engine is off -
+  # picked round-robin so every topic gets a look-in.
   max_articles_total: 6
   gnews:
     api_key: ${GNEWS_API_KEY}
@@ -66,21 +56,17 @@ news:
     breaking_per_day: 3     # ...but never more than this
 
 digest:
-  default_time: "08:00"     # used until a user picks their own
-  # Skip sending anything when no topic turned up news
-  skip_when_empty: false
-  # Show the lead article's picture above the digest. Only works when the
-  # article came from GNews (Google News RSS carries no images), so on
-  # RSS-only days the digest is quietly text as before.
-  lead_image: true
+  default_time: "08:00"     # until you pick your own time in the app
 
 space:
-  # Rocket launch reminders and the 3D globe web app.
+  # Rocket launches and satellites (the globe, launch reminders). With this
+  # off, the Orbital app still runs - just without launches.
   enabled: true
-  # The globe is served from the Pi on your home network.
+  # The globe and the Orbital app are served from the Pi.
   web_host: 0.0.0.0
   web_port: 8080
-  # What reminder links point at. Empty = http://<pi hostname>.local:8080
+  # The address your phone opens the app at. Pairing links use it.
+  # Empty = http://<pi hostname>.local:8080
   public_url: ""
   # Remind this many minutes before liftoff (for launches marked Go/TBC).
   remind_before_minutes: [1440, 30]
@@ -100,9 +86,6 @@ reports:
   enabled: true
   folder_id: ${GDRIVE_REPORTS_FOLDER_ID}
   service_account_file: ./data/google-service-account.json
-  # Telegram user ids who can read them in the app. Empty = the bot's owner
-  # (friends you made admin don't).
-  chat_ids: []
   poll_minutes: 15
   # Reports already older than this when first seen are listed in the app
   # without a notification, so a fresh install doesn't ring for old ones.

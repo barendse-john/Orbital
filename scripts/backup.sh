@@ -27,7 +27,7 @@ done
 KEY="data/google-service-account.json"
 [ -f "$KEY" ] && cp "$KEY" "$STAGE/" || true
 
-# The bot writes to the database continuously, and it runs in WAL mode, so
+# Orbital writes to the database continuously, and it runs in WAL mode, so
 # copying the file directly can capture a torn state. sqlite3's backup API
 # takes a consistent snapshot of a live database.
 DB="data/newsbot.db"

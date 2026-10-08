@@ -6,7 +6,7 @@
 #   sudo systemctl enable --now newsbot
 
 [Unit]
-Description=Telegram news bot
+Description=Orbital news and launch tracker
 After=network-online.target
 Wants=network-online.target
 
@@ -17,7 +17,7 @@ WorkingDirectory=/home/john/Documents/news_bot
 ExecStart=/home/john/Documents/news_bot/.venv/bin/python -m newsbot --config /home/john/Documents/news_bot/config.yaml
 Restart=always
 RestartSec=10
-# Don't hammer Telegram if something is badly broken
+# Don't restart in a tight loop if something is badly broken
 StartLimitBurst=5
 StartLimitIntervalSec=120
 Environment=PYTHONUNBUFFERED=1

@@ -1,85 +1,37 @@
-"""Entry point: python -m newsbot [--config config.yaml]"""
+"""Entry point.
+
+    python -m newsbot             run Orbital: the web app and every background job
+    python -m newsbot pair        print a link (and QR code) that signs your phone in
+    python -m newsbot unpair      sign every paired phone out
+    python -m newsbot --check     verify config, keys and sources, then exit
+
+Add `--config path/to/config.yaml` to any of them (default: ./config.yaml).
+"""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
 import logging
+import signal
 import socket
 import sys
 
-from telegram import BotCommand
-from telegram.error import BadRequest, NetworkError
-from telegram.ext import Application, ApplicationBuilder
-from telegram.request import HTTPXRequest
-
 from .ai import build_backend
 from .ai.base import describe
+from .appservice import AppService
 from .config import Config, ConfigError
 from .db import Database
 from .digest import DigestService
-from .handlers import BotHandlers
-from .news import NewsFetcher
-from .scheduler import DigestScheduler
-from .space import SpaceService, send_launch_reminders
-from .appservice import AppService
 from .engine import NewsEngine
+from .news import NewsFetcher
 from .push import Pusher
 from .reports import DriveError, ReportRelay, build_relay
+from .scheduler import Scheduler
+from .space import SpaceService, send_launch_reminders
 from .webapp import Ctx, NewsProxy, start_web
 
 log = logging.getLogger("newsbot")
-
-
-class RetryingRequest(HTTPXRequest):
-    """Retry a Telegram call that failed on the network, not on its answer.
-
-    The Pi's line drops the occasional request, and a lost send is what the
-    user experiences as the bot ignoring them. Only NetworkError (which
-    TimedOut inherits) is retried - a BadRequest or Forbidden is an answer,
-    and asking again would just get the same one.
-
-    The trade-off is honest: if a send actually arrived and only its response
-    was lost, the retry duplicates the message. Telegram offers no idempotency
-    key, and a rare doubled message beats a regularly missing one.
-    """
-
-    RETRY_DELAYS = (0.5, 2.0)
-
-    async def do_request(self, *args, **kwargs):
-        for delay in self.RETRY_DELAYS:
-            try:
-                return await super().do_request(*args, **kwargs)
-            except BadRequest:
-                raise
-            except NetworkError as exc:
-                log.warning("Telegram call failed (%s); retrying in %.1fs",
-                            exc, delay)
-                await asyncio.sleep(delay)
-        return await super().do_request(*args, **kwargs)
-
-# Telegram's command menu. A command still works if it is missing here, but
-# nobody discovers it - /retune, /requests and /users were invisible for
-# exactly that reason.
-COMMANDS = [
-    BotCommand("topics", "What you're following"),
-    BotCommand("add", "Follow a topic"),
-    BotCommand("retune", "Narrow what a topic searches for"),
-    BotCommand("remove", "Stop following a topic"),
-    BotCommand("search", "Search the news now"),
-    BotCommand("time", "Set your digest time"),
-    BotCommand("timezone", "Set your timezone"),
-    BotCommand("pause", "Mute the daily digest"),
-    BotCommand("resume", "Unmute the daily digest"),
-    BotCommand("launches", "Upcoming rocket launches"),
-    BotCommand("launchalerts", "Launch reminders on/off"),
-    BotCommand("app", "Open the phone app"),
-    BotCommand("status", "Your settings"),
-    BotCommand("users", "Who can use the bot (admins)"),
-    BotCommand("requests", "Who has asked to join (admins)"),
-    BotCommand("digest", "Send the digest now (admins)"),
-    BotCommand("help", "How to talk to me"),
-]
 
 
 def setup_logging(level: str) -> None:
@@ -88,11 +40,19 @@ def setup_logging(level: str) -> None:
         level=getattr(logging, level, logging.INFO),
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("telegram.ext.Application").setLevel(logging.INFO)
     logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 
-def build_application(cfg: Config) -> Application:
+def app_url_for(cfg: Config) -> str:
+    """Where the phone reaches the Pi; pairing links and push links use it."""
+    if cfg.space.public_url:
+        return cfg.space.public_url
+    return f"http://{socket.gethostname()}.local:{cfg.space.web_port}"
+
+
+# ------------------------------------------------------------------ service
+
+async def run_service(cfg: Config) -> int:
     db = Database(cfg.database_path)
     db.connect()
 
@@ -101,70 +61,62 @@ def build_application(cfg: Config) -> Application:
     digest = DigestService(db, fetcher, ai, cfg)
     space = (SpaceService(cfg.space, cfg.database_path.parent / "space_cache.json")
              if cfg.space.enabled else None)
-    globe_url = globe_url_for(cfg) if space else ""
-    appsvc = None
-    if space is not None:
-        appsvc = AppService(db, ai, digest, Pusher(cfg.database_path.parent), globe_url)
-        digest.app = appsvc
+    app_url = app_url_for(cfg)
+    appsvc = AppService(db, ai, digest, Pusher(cfg.database_path.parent), app_url)
+    digest.app = appsvc
     engine = None
     if cfg.news.engine.enabled:
         engine = NewsEngine(db, fetcher.rss, ai, cfg, app=appsvc)
         digest.engine = engine
-        if appsvc is not None:
-            appsvc.engine = engine
+        appsvc.engine = engine
     relay, why_not = build_relay(cfg, db)
     if relay is None and cfg.reports.folder_id:
         log.warning("Reports from Drive are off: %s", why_not)
-    if relay is not None and appsvc is not None:
+    if relay is not None:
         relay.app = appsvc
         appsvc.relay = relay
-    web = {}
 
-    async def post_init(app: Application) -> None:
-        scheduler = DigestScheduler(app, db, digest)
-        handlers = BotHandlers(cfg, db, ai, fetcher, digest, scheduler,
-                               space=space, globe_url=globe_url, appsvc=appsvc)
-        if appsvc is not None:
-            appsvc.scheduler = scheduler
-        handlers.register(app)
-        app.bot_data.update(
-            {"db": db, "ai": ai, "fetcher": fetcher, "digest": digest,
-             "scheduler": scheduler, "config": cfg}
-        )
-        await scheduler.reschedule_all()
-        scheduler.schedule_maintenance()
-        if engine is not None:
-            engine.bot = app.bot
+    scheduler = Scheduler(db, digest)
+    appsvc.scheduler = scheduler
+    owner = await db.ensure_owner(cfg.digest.default_time)
 
-            async def engine_job(_ctx) -> None:
-                try:
-                    await engine.tick()
-                except Exception:  # noqa: BLE001 - a bad hour must not unschedule the job
-                    log.exception("News engine tick failed")
+    loop = asyncio.get_running_loop()
+    scheduler.start()
+    if not scheduler.schedule(owner):
+        log.info("No daily briefing yet: open the app once so it can set your "
+                 "timezone, and add a topic")
+    scheduler.schedule_maintenance()
+    if engine is not None:
+        scheduler.every("news-engine", engine.tick,
+                        seconds=cfg.news.engine.collect_every_minutes * 60, first=90)
+    if relay is not None:
+        schedule_reports(scheduler, relay, cfg.reports.poll_minutes)
+    if space is not None:
+        schedule_space(scheduler, db, space, cfg, appsvc)
 
-            app.job_queue.run_repeating(
-                engine_job, interval=cfg.news.engine.collect_every_minutes * 60,
-                first=90, name="news-engine")
-        if relay is not None:
-            schedule_reports(app, relay, cfg.reports.poll_minutes)
-        me = await app.bot.get_me()
-        if space is not None:
-            schedule_space(app, db, space, cfg, globe_url, appsvc)
-            loop = asyncio.get_running_loop()
-            news = NewsProxy(loop, fetcher.rss)
-            ctx = Ctx(space, news, appsvc, loop, globe_url, me.username or "")
-            web["server"] = start_web(space, cfg.space.web_host,
-                                      cfg.space.web_port, news, ctx)
+    news = NewsProxy(loop, fetcher.rss)
+    server = start_web(space, cfg.space.web_host, cfg.space.web_port, news,
+                       Ctx(space, news, appsvc, loop, app_url))
+    if server is None:
+        log.error("The web app could not start, so there is nothing to talk to")
+        return 1
+    if not await db.has_app_tokens(owner.user_id):
+        log.info("No phone paired yet. Run `python -m newsbot pair` to sign one in")
+
+    stop = asyncio.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            await app.bot.set_my_commands(COMMANDS)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Could not register the command menu: %s", exc)
-        log.info("Running as @%s", me.username)
-
-    async def post_shutdown(_app: Application) -> None:
-        if web.get("server"):
-            web["server"].shutdown()
-            web["server"].server_close()
+            loop.add_signal_handler(sig, stop.set)
+        except (NotImplementedError, RuntimeError):   # Windows: Ctrl+C still raises
+            pass
+    log.info("Orbital is running at %s/app/ (AI: %s, news: %s)", app_url,
+             cfg.ai.backend, "gnews+rss" if cfg.news.gnews.api_key else "rss")
+    try:
+        await stop.wait()
+    finally:
+        scheduler.shutdown()
+        server.shutdown()
+        server.server_close()
         if space is not None:
             await space.close()
         if engine is not None:
@@ -175,92 +127,89 @@ def build_application(cfg: Config) -> Application:
         await ai.close()
         db.close()
         log.info("Shut down cleanly")
-
-    # PTB's defaults are about five seconds. A domestic connection to
-    # Telegram is not reliably that quick, and a timeout here surfaces as the
-    # bot ignoring you.
-    request = RetryingRequest(connect_timeout=15.0, read_timeout=25.0,
-                              write_timeout=25.0, pool_timeout=5.0)
-    getter = HTTPXRequest(connect_timeout=15.0, read_timeout=25.0,
-                          write_timeout=25.0, pool_timeout=5.0)
-
-    return (
-        ApplicationBuilder()
-        .token(cfg.telegram.token)
-        .request(request)
-        .get_updates_request(getter)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
-        .build()
-    )
+    return 0
 
 
-def globe_url_for(cfg: Config) -> str:
-    if cfg.space.public_url:
-        return cfg.space.public_url
-    return f"http://{socket.gethostname()}.local:{cfg.space.web_port}"
+def schedule_space(scheduler: Scheduler, db: Database, space: SpaceService,
+                   cfg: Config, appsvc: AppService) -> None:
+    """Launch refresh, orbit refresh, the reminder check and upkeep."""
 
-
-def schedule_space(app: Application, db: Database, space: SpaceService,
-                   cfg: Config, globe_url: str, appsvc=None) -> None:
-    """Launch refresh, TLE refresh and the reminder check, all on PTB's job
-    queue. Each callback swallows its own errors: a failed fetch must never
-    unschedule the job."""
-    jq = app.job_queue
-
-    async def launches_job(_ctx) -> None:
-        await space.refresh_launches()
-
-    async def satellites_job(_ctx) -> None:
-        await space.refresh_satellites()
-
-    async def reminders_job(ctx) -> None:
-        try:
-            sent = await send_launch_reminders(
-                ctx.bot, db, space, cfg.space.remind_before_minutes, globe_url,
-                app=appsvc)
-            if sent:
-                log.info("Sent %d launch reminder(s)", sent)
-        except Exception:  # noqa: BLE001
-            log.exception("Launch reminder check failed")
-
-    async def prune_job(_ctx) -> None:
-        await db.prune_launch_alerts()
+    async def reminders() -> None:
+        sent = await send_launch_reminders(db, space, cfg.space.remind_before_minutes,
+                                           appsvc)
+        if sent:
+            log.info("Sent %d launch reminder(s)", sent)
 
     # Straight after a restart only if the cached copy is stale - the free
     # Launch Library tier is 15 requests an hour.
-    jq.run_repeating(launches_job, interval=cfg.space.launch_refresh_minutes * 60,
-                     first=5 if space.launches_stale else
-                     cfg.space.launch_refresh_minutes * 60,
-                     name="space-launches")
-    jq.run_repeating(satellites_job, interval=3600, first=20,
-                     name="space-satellites")
-    jq.run_repeating(reminders_job, interval=120, first=45,
-                     name="space-reminders")
-    jq.run_repeating(prune_job, interval=86400, first=3600, name="space-prune")
+    every = cfg.space.launch_refresh_minutes * 60
+    scheduler.every("space-launches", space.refresh_launches, seconds=every,
+                    first=5 if space.launches_stale else every)
+    scheduler.every("space-satellites", space.refresh_satellites, seconds=3600, first=20)
+    scheduler.every("space-reminders", reminders, seconds=120, first=45)
+    scheduler.every("space-prune", db.prune_launch_alerts, seconds=86400, first=3600)
 
 
-def schedule_reports(app: Application, relay: ReportRelay, minutes: int) -> None:
+def schedule_reports(scheduler: Scheduler, relay: ReportRelay, minutes: int) -> None:
     """Poll the Drive folder. The first check is a minute after start, so a
     deploy picks up a report that is waiting rather than sitting on it."""
 
-    async def reports_job(_ctx) -> None:
+    async def poll() -> None:
         try:
             sent = await relay.poll()
             if sent:
                 log.info("Notified about %d new report(s) from Drive", sent)
         except DriveError as exc:
             log.warning("Report check failed: %s", exc)
-        except Exception:  # noqa: BLE001 - a bad poll must not unschedule the job
-            log.exception("Report check failed")
 
-    app.job_queue.run_repeating(reports_job, interval=minutes * 60, first=60,
-                                name="reports")
+    scheduler.every("reports", poll, seconds=minutes * 60, first=60)
     log.info("Reports from Drive: checking every %d min", minutes)
 
 
-async def _check(cfg: Config) -> int:
-    """Validate the setup without starting the bot."""
+# ------------------------------------------------------------------ pairing
+
+async def pair(cfg: Config, name: str | None, url: str | None) -> int:
+    db = Database(cfg.database_path)
+    db.connect()
+    try:
+        owner = await db.ensure_owner(cfg.digest.default_time, name=name)
+        app = AppService(db, None, None, None, (url or app_url_for(cfg)).rstrip("/"))
+        link = app.pair_link(await app.pair(owner.user_id))
+    finally:
+        db.close()
+    print("\nOpen this link on your phone to sign Orbital in:\n")
+    print(f"  {link}\n")
+    try:
+        import qrcode
+        qr = qrcode.QRCode(border=1)
+        qr.add_data(link)
+        qr.print_ascii(invert=True)
+        print()
+    except ImportError:
+        print("(pip install qrcode to get a QR code here as well)\n")
+    print("Anyone with this link can read your news, so don't share it.")
+    if not (url or cfg.space.public_url):
+        print("If your phone can't open it, set space.public_url in config.yaml "
+              "(or pass --url) to the address it reaches the Pi at.")
+    return 0
+
+
+async def unpair(cfg: Config) -> int:
+    db = Database(cfg.database_path)
+    db.connect()
+    try:
+        owner = await db.owner_id()
+        removed = await db.revoke_app_tokens(owner) if owner is not None else 0
+    finally:
+        db.close()
+    print(f"Signed out {removed} phone(s). Run `python -m newsbot pair` to sign one in again.")
+    return 0
+
+
+# -------------------------------------------------------------------- check
+
+async def check(cfg: Config) -> int:
+    """Validate the setup without starting the service."""
     ok = True
     db = Database(cfg.database_path)
     db.connect()
@@ -290,7 +239,8 @@ async def _check(cfg: Config) -> int:
             print(f"  orbits     {'OK ' if n else 'FAIL'} "
                   f"({count} satellites via CelesTrak)")
             await space.close()
-        print(f"  globe      {globe_url_for(cfg)}")
+    else:
+        print("  launches   off (space.enabled is false)")
 
     if cfg.reports.enabled and cfg.reports.folder_id:
         relay, why_not = build_relay(cfg, db)
@@ -300,9 +250,7 @@ async def _check(cfg: Config) -> int:
         else:
             try:
                 found = await relay.drive.list_reports(cfg.reports.folder_id)
-                to = await relay.recipients()
-                print(f"  reports    OK  ({len(found)} in the Drive folder; "
-                      f"shown in the app to {', '.join(map(str, to)) or 'nobody yet'})")
+                print(f"  reports    OK  ({len(found)} in the Drive folder)")
             except Exception as exc:  # noqa: BLE001
                 print(f"  reports    FAIL ({describe(exc)})")
                 ok = False
@@ -312,14 +260,11 @@ async def _check(cfg: Config) -> int:
               + ("no GDRIVE_REPORTS_FOLDER_ID" if cfg.reports.enabled
                  else "reports.enabled is false") + ")")
 
-    app = ApplicationBuilder().token(cfg.telegram.token).build()
-    try:
-        async with app.bot:
-            me = await app.bot.get_me()
-        print(f"  telegram   OK  (@{me.username})")
-    except Exception as exc:  # noqa: BLE001
-        print(f"  telegram   FAIL ({exc})")
-        ok = False
+    owner = await db.owner()
+    paired = owner is not None and await db.has_app_tokens(owner.user_id)
+    who = f"owner {owner.first_name or owner.user_id}, " if owner else ""
+    print(f"  app        {app_url_for(cfg)}/app/ ({who}"
+          f"{'a phone is paired' if paired else 'no phone paired yet - run pair'})")
 
     await fetcher.close()
     await ai.close()
@@ -327,13 +272,22 @@ async def _check(cfg: Config) -> int:
     return 0 if ok else 1
 
 
+# --------------------------------------------------------------------- main
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="newsbot")
+    parser = argparse.ArgumentParser(prog="newsbot", description="Orbital")
+    parser.add_argument("command", nargs="?", default="run",
+                        choices=["run", "pair", "unpair", "check"],
+                        help="what to do (default: run)")
     parser.add_argument("--config", default="config.yaml",
                         help="path to config.yaml (default: ./config.yaml)")
     parser.add_argument("--check", action="store_true",
-                        help="verify config, keys and news sources, then exit")
+                        help="same as the check command")
+    parser.add_argument("--name", help="pair: your name, shown in the app")
+    parser.add_argument("--url", help="pair: the address your phone reaches the "
+                        "Pi at, if not space.public_url")
     args = parser.parse_args(argv)
+    command = "check" if args.check else args.command
 
     try:
         cfg = Config.load(args.config)
@@ -341,17 +295,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Config error: {exc}", file=sys.stderr)
         return 2
 
+    if command == "pair":
+        return asyncio.run(pair(cfg, args.name, args.url))
+    if command == "unpair":
+        return asyncio.run(unpair(cfg))
     setup_logging(cfg.log_level)
-
-    if args.check:
+    if command == "check":
         print("Checking setup...")
-        return asyncio.run(_check(cfg))
-
-    app = build_application(cfg)
-    log.info("Starting news bot (AI: %s, news: %s)", cfg.ai.backend,
-             "gnews+rss" if cfg.news.gnews.api_key else "rss")
-    app.run_polling(drop_pending_updates=True)
-    return 0
+        return asyncio.run(check(cfg))
+    try:
+        return asyncio.run(run_service(cfg))
+    except KeyboardInterrupt:
+        return 0
 
 
 if __name__ == "__main__":

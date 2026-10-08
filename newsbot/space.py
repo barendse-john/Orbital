@@ -1,7 +1,7 @@
 """Rocket launches and satellite orbits.
 
-Feeds two things: launch reminders in Telegram, and the globe web app
-(`webapp.py`). All fetching happens here, on the bot's event loop, on a
+Feeds two things: launch reminders in the Orbital app, and the globe
+(`webapp.py`). All fetching happens here, on the service's event loop, on a
 schedule - the web server only ever serves the cached snapshot, so opening the
 globe ten times never costs an API call.
 
@@ -24,18 +24,16 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import httpx
 
 from .ai.base import describe
-from .formatting import esc
 
 log = logging.getLogger(__name__)
 
 LL2_URL = "https://ll.thespacedevs.com/2.3.0/launches/upcoming/"
 CELESTRAK_URL = "https://celestrak.org/NORAD/elements/gp.php"
-USER_AGENT = "newsbot-pi/1.0 (personal Telegram bot)"
+USER_AGENT = "orbital-pi/1.0 (personal launch tracker)"
 
 # Only remind about launches that are actually expected to fly at that time.
 # "TBD" launches move by days; a reminder for one is noise.
@@ -489,62 +487,25 @@ def launches_ics(launches: list[Launch], globe_url: str = "",
     return ("\r\n".join(_ics_fold(ln) for ln in lines) + "\r\n").encode("utf-8")
 
 
-# ------------------------------------------------------------ Telegram text
-
-def launch_html(launch: Launch, tz_name: str | None, globe_url: str,
-                now: datetime | None = None) -> str:
-    now = now or datetime.now(timezone.utc)
-    try:
-        tz = ZoneInfo(tz_name) if tz_name else timezone.utc
-    except (KeyError, ValueError):
-        tz = timezone.utc
-    local = launch.net_dt.astimezone(tz)
-    minutes = (launch.net_dt - now).total_seconds() / 60
-    where = ", ".join(p for p in (launch.pad, launch.location) if p)
-    links = [f'<a href="{esc(launch.link)}">'
-             f'{"Watch live" if launch.stream_url else "Launch page"}</a>']
-    if globe_url:
-        links.append(f'<a href="{esc(globe_url)}/#launch={esc(launch.id)}">'
-                     f'On the globe</a>')
-    status = f" · {esc(launch.status)}" if launch.status else ""
-    return (
-        f"🚀 <b>{esc(launch.name)}</b>\n"
-        f"{local:%a %d %b %H:%M} (in {when_text(minutes)}){status}\n"
-        f"{esc(launch.provider)}{' · ' if launch.provider and where else ''}"
-        f"{esc(where)}\n"
-        + " · ".join(links)
-    )
-
-
-async def send_launch_reminders(bot, db, space: SpaceService, leads: list[int],
-                                globe_url: str, app=None) -> int:
-    """Telegram and/or app push, per the user's app preferences. The claim
-    is per user and reminder, so neither channel can double-send."""
-    users = await db.launch_alert_users()
-    if not users or not space.launches:
+async def send_launch_reminders(db, space: SpaceService, leads: list[int],
+                                app) -> int:
+    """Push due reminders to the owner's phone. The claim is per user and
+    reminder, so a restart or an overlapping run can't double-send."""
+    owner = await db.owner_id()
+    users = [u for u in await db.launch_alert_users() if u[0] == owner]
+    if not users or not space.launches or app is None:
         return 0
     now = datetime.now(timezone.utc)
     sent = 0
     for launch, lead in due_reminders(space.launches, now, leads):
         key = alert_key(launch, lead)
         minutes = (launch.net_dt - now).total_seconds() / 60
-        for user_id, tz_name in users:
+        for user_id, _tz in users:
             if not await db.claim_launch_alert(user_id, key):
                 continue        # already sent this one
-            if app is not None:
-                try:
-                    if await app.launch_push(user_id, launch, lead, when_text(minutes)):
-                        sent += 1
-                    if not await app.launch_telegram(user_id):
-                        continue
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("Launch push to %s failed: %s", user_id, describe(exc))
             try:
-                await bot.send_message(
-                    user_id, launch_html(launch, tz_name, globe_url, now),
-                    parse_mode="HTML", disable_web_page_preview=True)
-                sent += 1
-            except Exception as exc:  # noqa: BLE001 - one user must not stop the rest
-                log.warning("Launch reminder to %s failed: %s", user_id,
-                            describe(exc))
+                if await app.launch_push(user_id, launch, lead, when_text(minutes)):
+                    sent += 1
+            except Exception as exc:  # noqa: BLE001 - one failure must not stop the rest
+                log.warning("Launch reminder push failed: %s", describe(exc))
     return sent

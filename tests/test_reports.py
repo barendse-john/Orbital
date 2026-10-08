@@ -4,6 +4,7 @@ No network and no google-auth needed: Drive runs on httpx.MockTransport and
 the JWT signer is a stand-in.
 """
 
+import asyncio
 import json
 import os
 import tempfile
@@ -166,7 +167,10 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.db = Database(Path(self.tmp.name) / "t.db")
         self.db.connect()
-        await self.db.bootstrap_owner(42)
+        # The owner, as a database from the Telegram days records them.
+        await asyncio.to_thread(
+            self.db._write, "INSERT INTO admin_users (user_id, added_by, added_at) "
+            "VALUES (42, NULL, '2026-09-01')", ())
         self.drive = FakeDrive(
             [Report("new", "2026-10-08_brief_v01.md", NOW - timedelta(hours=2))],
             {"new": "# Morning\n\n- **one**"})
@@ -191,15 +195,13 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.relay.app.pushed), 1)
         self.assertEqual(self.drive.downloads, ["new"])     # no second download either
 
-    async def test_friends_who_are_admins_do_not_get_reports(self):
-        await self.db.add_admin(7, added_by=42)
+    async def test_only_the_owner_gets_reports(self):
+        # A friend's admin row from the Telegram days counts for nothing.
+        await asyncio.to_thread(
+            self.db._write, "INSERT INTO admin_users (user_id, added_by, added_at) "
+            "VALUES (7, 42, '2026-09-02')", ())
         await self.relay.poll(NOW)
         self.assertEqual({u for u, _ in self.relay.app.pushed}, {42})
-
-    async def test_chat_ids_override_the_owner(self):
-        relay = self.make_relay(chat_ids=[5, 6])
-        await relay.poll(NOW)
-        self.assertEqual([u for u, _ in relay.app.pushed], [5, 6])
 
     async def test_old_reports_are_kept_for_the_app_without_notifying(self):
         self.drive.reports.insert(0, Report("old", "2026-10-01_brief.md",
@@ -272,10 +274,8 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("Orbital", why)
 
     def test_section_overrides(self):
-        cfg = self.load("reports:\n  folder_id: xyz\n  chat_ids: [1, 2]\n"
-                        "  poll_minutes: 1\n")
+        cfg = self.load("reports:\n  folder_id: xyz\n  poll_minutes: 1\n")
         self.assertEqual(cfg.reports.folder_id, "xyz")
-        self.assertEqual(cfg.reports.chat_ids, [1, 2])
         self.assertEqual(cfg.reports.poll_minutes, 5)       # floor
 
 

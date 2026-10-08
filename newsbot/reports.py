@@ -1,10 +1,9 @@
 """Reports from a Google Drive folder, shown in the Orbital app.
 
-A cloud routine writes a markdown report (the Kalulu morning briefing) into a
-Drive folder every morning. This polls that folder, keeps each new report in
-the database (the app's Reports tab reads it from there) and under
-data/reports/, and sends a phone notification to whoever reads reports - the
-bot's owner by default. Nothing goes to Telegram: John reads these in the app.
+Something - a scheduled AI routine, a script, you - writes markdown reports
+into a Drive folder. This polls that folder, keeps each new report in the
+database (the app's Reports tab reads it from there) and under data/reports/,
+and sends the owner a phone notification.
 
 Drive is read with a service account, a Google identity with no browser
 login, which suits a headless Pi. Its scope is drive.readonly and it sees only
@@ -13,11 +12,10 @@ the folder that was shared with it.
 As with the Anthropic backend there is no Google SDK: google-auth signs the
 token request and the two Drive calls go over plain httpx. google-auth is
 optional. Without it, a key file or a folder id the feature switches itself
-off with one log line and the rest of the bot carries on.
+off with one log line and the rest of the service carries on.
 
-Ported from John's standalone briefing_relay.py (cron, its own JSON state,
-Telegram messages). Notification state now lives in SQLite, per report and
-per reader, so a restart or an overlapping poll can't notify twice.
+Notification state lives in SQLite, per report and reader, so a restart or an
+overlapping poll can't notify twice.
 """
 
 from __future__ import annotations
@@ -300,23 +298,17 @@ class DriveClient:
 
 class ReportRelay:
     def __init__(self, cfg: "ReportsConfig", db: "Database", drive: DriveClient,
-                 archive_dir: Path, admins: list[int] | None = None):
+                 archive_dir: Path):
         self.cfg = cfg
         self.db = db
         self.drive = drive
         self.archive_dir = Path(archive_dir)
-        self.admins = list(admins or [])
         self.app = None             # AppService, attached in __main__
 
     async def recipients(self) -> list[int]:
-        """Who may read reports in the app and gets notified of new ones:
-        reports.chat_ids if set, otherwise the bot's owner.
-
-        Not every admin: admins can be friends, and these reports are John's.
-        """
-        if self.cfg.chat_ids:
-            return list(dict.fromkeys(self.cfg.chat_ids))
-        return sorted(set(self.admins) | await self.db.owner_ids())
+        """Who reads reports in the app and is notified of new ones: the owner."""
+        owner = await self.db.owner_id()
+        return [] if owner is None else [owner]
 
     async def poll(self, now: datetime | None = None) -> int:
         """Store anything new and notify about it. Returns how many
@@ -326,8 +318,8 @@ class ReportRelay:
         """
         recipients = await self.recipients()
         if not recipients:
-            log.warning("Reports: nobody to show them to yet. Message the bot "
-                        "to claim it, or set reports.chat_ids")
+            log.warning("Reports: nobody to show them to yet. Pair your phone "
+                        "with `python -m newsbot pair`")
             return 0
         reports = await self.drive.list_reports(self.cfg.folder_id)
         if not reports:
@@ -414,8 +406,8 @@ def build_relay(cfg: "Config", db: "Database") -> tuple[ReportRelay | None, str]
         drive = DriveClient.from_key_file(key)
     except ImportError:
         return None, "google-auth not installed (pip install -r requirements.txt)"
-    except Exception as exc:  # noqa: BLE001 - a bad key must not stop the bot
+    except Exception as exc:  # noqa: BLE001 - a bad key must not stop the service
         return None, f"unusable key {key}: {describe(exc)}"
     archive = (Path(rc.archive_dir).expanduser() if rc.archive_dir
                else cfg.database_path.parent / "reports")
-    return ReportRelay(rc, db, drive, archive, admins=cfg.telegram.admins), ""
+    return ReportRelay(rc, db, drive, archive), ""

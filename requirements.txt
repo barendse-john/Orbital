@@ -1,13 +1,9 @@
 # Core
-python-telegram-bot[job-queue]>=21.6,<22
+APScheduler>=3.10,<4
 httpx>=0.27,<1
 feedparser>=6.0.11
 PyYAML>=6.0.1
 python-dotenv>=1.0.1
-
-# Offline lat/lon -> IANA timezone (optional: without it, the bot asks for a
-# city name instead of accepting Telegram's "share location" button).
-timezonefinder>=6.5.0
 
 # Phone app notifications (optional: without it the app works, silently)
 pywebpush>=2.0.0
@@ -15,3 +11,7 @@ pywebpush>=2.0.0
 # Reports from Google Drive (optional: signs the service account's token
 # request; without it the Drive relay stays off and nothing else changes)
 google-auth>=2.20
+
+# A QR code in the terminal for `python -m newsbot pair` (optional: without
+# it you get the link only)
+qrcode>=7.4

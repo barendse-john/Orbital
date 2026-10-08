@@ -1,12 +1,25 @@
-"""Per-user daily digest jobs, each in that user's own timezone."""
+"""Every timed job, on APScheduler's asyncio scheduler.
+
+Two kinds:
+
+- the owner's daily briefing, at their chosen time in their own timezone;
+- background work on a fixed interval - the news engine, launches,
+  satellites, launch reminders, the Drive folder - plus nightly upkeep.
+
+Every job swallows and logs its own errors: one bad run must never
+unschedule the job or take the service down.
+"""
 
 from __future__ import annotations
 
 import logging
-from datetime import time as dtime
+from datetime import datetime, timedelta, timezone
+from typing import Awaitable, Callable
 from zoneinfo import ZoneInfo
 
-from telegram.ext import Application, ContextTypes
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from .db import Database, User
 from .digest import DigestService
@@ -20,33 +33,56 @@ def job_name(user_id: int) -> str:
     return f"digest-{user_id}"
 
 
-class DigestScheduler:
-    def __init__(self, app: Application, db: Database, digest: DigestService):
-        self.app = app
+class Scheduler:
+    def __init__(self, db: Database, digest: DigestService):
         self.db = db
         self.digest = digest
+        self.aps = AsyncIOScheduler(
+            timezone=timezone.utc,
+            # A Pi that was busy or briefly asleep runs a missed job once,
+            # late, rather than skipping it or running it several times.
+            job_defaults={"coalesce": True, "max_instances": 1,
+                          "misfire_grace_time": 15 * 60},
+        )
 
-    @property
-    def job_queue(self):
-        if self.app.job_queue is None:
-            raise RuntimeError(
-                "JobQueue missing. Install with: "
-                "pip install 'python-telegram-bot[job-queue]'"
-            )
-        return self.app.job_queue
+    # ---------------------------------------------------------- lifecycle
 
-    # ------------------------------------------------------------------
+    def start(self) -> None:
+        """Call from inside the running event loop."""
+        self.aps.start()
+
+    def shutdown(self) -> None:
+        if self.aps.running:
+            self.aps.shutdown(wait=False)
+
+    # ---------------------------------------------------------- repeating
+
+    def every(self, name: str, job: Callable[[], Awaitable[object]], *,
+              seconds: float, first: float) -> None:
+        """Run `job` every `seconds`, the first time `first` seconds from now."""
+
+        async def run() -> None:
+            try:
+                await job()
+            except Exception:  # noqa: BLE001 - a bad run must not unschedule the job
+                log.exception("Job %s failed", name)
+
+        self.aps.add_job(
+            run, IntervalTrigger(seconds=seconds), id=name, name=name,
+            replace_existing=True,
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=first))
+
+    # ------------------------------------------------------- the briefing
 
     def cancel(self, user_id: int) -> None:
-        for job in self.job_queue.get_jobs_by_name(job_name(user_id)):
-            job.schedule_removal()
+        if self.aps.get_job(job_name(user_id)) is not None:
+            self.aps.remove_job(job_name(user_id))
 
     def schedule(self, user: User) -> bool:
-        """(Re)schedule one user's digest. False if they aren't set up yet."""
+        """(Re)schedule the daily briefing. False if it can't run yet."""
         self.cancel(user.user_id)
         if not user.digest_enabled or not user.is_ready:
             return False
-
         try:
             hour, minute = (int(p) for p in user.digest_time.split(":"))
             tz = ZoneInfo(user.timezone)
@@ -54,49 +90,34 @@ class DigestScheduler:
             log.error("Bad schedule for %s (%s %s): %s", user.user_id,
                       user.digest_time, user.timezone, exc)
             return False
-
-        self.job_queue.run_daily(
-            self._run,
-            time=dtime(hour=hour, minute=minute, tzinfo=tz),
-            name=job_name(user.user_id),
-            data={"user_id": user.user_id},
-            chat_id=user.user_id,
-        )
-        log.info("Digest for %s scheduled at %s %s", user.user_id,
-                 user.digest_time, user.timezone)
+        self.aps.add_job(
+            self._run, CronTrigger(hour=hour, minute=minute, timezone=tz),
+            args=[user.user_id], id=job_name(user.user_id),
+            name=job_name(user.user_id), replace_existing=True)
+        log.info("Briefing scheduled at %s %s", user.digest_time, user.timezone)
         return True
 
-    async def reschedule_all(self) -> int:
-        count = 0
-        for user in await self.db.all_users():
-            if self.schedule(user):
-                count += 1
-        log.info("%d digest job(s) scheduled", count)
-        return count
-
     def schedule_maintenance(self) -> None:
-        for job in self.job_queue.get_jobs_by_name(MAINTENANCE_JOB):
-            job.schedule_removal()
-        self.job_queue.run_daily(
-            self._maintenance,
-            time=dtime(hour=3, minute=30, tzinfo=ZoneInfo("UTC")),
-            name=MAINTENANCE_JOB,
-        )
+        self.aps.add_job(
+            self._maintenance, CronTrigger(hour=3, minute=30, timezone=timezone.utc),
+            id=MAINTENANCE_JOB, name=MAINTENANCE_JOB, replace_existing=True)
 
     # ---------------------------------------------------------- callbacks
 
-    async def _run(self, context: ContextTypes.DEFAULT_TYPE) -> None:
-        user_id = context.job.data["user_id"]
+    async def _run(self, user_id: int) -> None:
         user = await self.db.get_user(user_id)
         if user is None or not user.digest_enabled:
-            log.info("Skipping digest for %s (paused or unknown)", user_id)
+            log.info("Skipping the briefing for %s (paused or unknown)", user_id)
             return
         try:
-            await self.digest.send_digest(context.bot, user)
-        except Exception:  # noqa: BLE001 - a bad digest must not kill the job
-            log.exception("Digest failed for %s", user_id)
+            await self.digest.send_digest(user)
+        except Exception:  # noqa: BLE001 - a bad briefing must not kill the job
+            log.exception("Briefing failed for %s", user_id)
 
-    async def _maintenance(self, context: ContextTypes.DEFAULT_TYPE) -> None:
-        removed = await self.db.prune_sent(days=45)
-        if removed:
-            log.info("Pruned %d old article records", removed)
+    async def _maintenance(self) -> None:
+        try:
+            removed = await self.db.prune_sent(days=45)
+            if removed:
+                log.info("Pruned %d old article records", removed)
+        except Exception:  # noqa: BLE001
+            log.exception("Nightly maintenance failed")

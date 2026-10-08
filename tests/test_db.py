@@ -1,5 +1,6 @@
 """Storage behaviour: per-user topics, dedupe, quota accounting."""
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -68,27 +69,27 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.db.gnews_used_today(), 100)
         self.assertFalse(await self.db.claim_gnews_call(100))
 
-    async def test_bootstrap_owner_claims_when_nobody_has(self):
-        self.assertTrue(await self.db.bootstrap_owner(1))
-        self.assertIn(1, await self.db.allowed_user_ids())
-        self.assertIn(1, await self.db.admin_user_ids())
+    async def test_a_fresh_install_has_no_owner_until_one_is_made(self):
+        self.assertIsNone(await self.db.owner_id())
+        owner = await self.db.ensure_owner("07:00", name="Ada")
+        self.assertEqual((owner.user_id, owner.first_name, owner.digest_time),
+                         (1, "Ada", "07:00"))
+        self.assertEqual((await self.db.ensure_owner()).user_id, 1)
 
-    async def test_bootstrap_only_claims_once(self):
-        await self.db.bootstrap_owner(1)
-        self.assertFalse(await self.db.bootstrap_owner(2))
-        self.assertNotIn(2, await self.db.allowed_user_ids())
-        self.assertNotIn(2, await self.db.admin_user_ids())
+    async def test_the_owner_from_the_telegram_days_is_kept(self):
+        # Whoever claimed the bot first: an admin nobody added.
+        await self.db.ensure_user(5, "friend", "Friend")
+        await self.db.ensure_user(4242, "john", "John")
+        await asyncio.to_thread(
+            self.db._write, "INSERT INTO admin_users (user_id, added_by, added_at) "
+            "VALUES (4242, NULL, '2026-09-01'), (5, 4242, '2026-09-02')", ())
+        self.assertEqual(await self.db.owner_id(), 4242)
+        self.assertEqual((await self.db.ensure_owner()).user_id, 4242)
 
-    async def test_bootstrap_refuses_once_someone_is_already_allowed(self):
-        await self.db.allow_user(9)
-        self.assertFalse(await self.db.bootstrap_owner(1))
-        self.assertNotIn(1, await self.db.admin_user_ids())
-
-    async def test_access_list_round_trip(self):
-        await self.db.allow_user(99, added_by=1)
-        self.assertIn(99, await self.db.allowed_user_ids())
-        self.assertTrue(await self.db.deny_user(99))
-        self.assertNotIn(99, await self.db.allowed_user_ids())
+    async def test_without_an_admin_row_the_oldest_user_owns_it(self):
+        await self.db.ensure_user(3, "first", "First")
+        await self.db.ensure_user(8, "second", "Second")
+        self.assertEqual(await self.db.owner_id(), 3)
 
     async def test_settings_survive_a_reconnect(self):
         await self.db.ensure_user(1)

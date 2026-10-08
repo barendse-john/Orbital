@@ -18,6 +18,9 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+# Notification switches in the app's Settings tab. All on by default.
+PREF_KEYS = ("digest_push", "launch_push", "breaking_push", "report_push")
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     user_id       INTEGER PRIMARY KEY,
@@ -42,40 +45,6 @@ CREATE TABLE IF NOT EXISTS topics (
 CREATE UNIQUE INDEX IF NOT EXISTS topics_user_label
     ON topics (user_id, lower(label));
 
--- A topic the bot has asked a narrowing question about and is waiting on.
--- In the database rather than in memory so a deploy restart mid-question
--- doesn't leave the user answering into the void.
-CREATE TABLE IF NOT EXISTS pending_topics (
-    user_id  INTEGER PRIMARY KEY,
-    label    TEXT NOT NULL,
-    question TEXT NOT NULL,
-    asked_at TEXT NOT NULL
-);
-
--- Things the user said that might belong in a topic's search query. An
--- explicit steer is acted on at once; a passing interest has to survive a
--- week before it counts, so one busy news week doesn't rewrite a query.
-CREATE TABLE IF NOT EXISTS topic_signals (
-    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    label   TEXT NOT NULL,
-    phrase  TEXT NOT NULL,
-    seen_at TEXT NOT NULL,
-    applied INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE INDEX IF NOT EXISTS topic_signals_lookup
-    ON topic_signals (user_id, label, phrase);
-
--- An open back-and-forth about the news. Kept in SQLite rather than in
--- memory so a deploy restart doesn't drop someone mid-conversation.
-CREATE TABLE IF NOT EXISTS chat_sessions (
-    user_id  INTEGER PRIMARY KEY,
-    history  TEXT NOT NULL,
-    started_at TEXT NOT NULL,
-    last_at  TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS sent_articles (
     user_id     INTEGER NOT NULL,
     article_key TEXT NOT NULL,
@@ -88,25 +57,6 @@ CREATE INDEX IF NOT EXISTS sent_articles_sent_at ON sent_articles (sent_at);
 CREATE TABLE IF NOT EXISTS api_usage (
     day   TEXT PRIMARY KEY,
     gnews_calls INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS allowed_users (
-    user_id  INTEGER PRIMARY KEY,
-    added_by INTEGER,
-    added_at TEXT NOT NULL
-);
-
--- Someone who messaged the bot without being on the list. One row per
--- person, so pestering the bot doesn't spam the owner.
-CREATE TABLE IF NOT EXISTS access_requests (
-    user_id     INTEGER PRIMARY KEY,
-    username    TEXT,
-    first_name  TEXT,
-    note        TEXT,
-    status      TEXT NOT NULL DEFAULT 'pending',
-    requested_at TEXT NOT NULL,
-    decided_at  TEXT,
-    decided_by  INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS launch_alerts (
@@ -138,9 +88,7 @@ CREATE TABLE IF NOT EXISTS push_subs (
 
 CREATE TABLE IF NOT EXISTS app_prefs (
     user_id         INTEGER PRIMARY KEY,
-    digest_telegram INTEGER NOT NULL DEFAULT 1,
     digest_push     INTEGER NOT NULL DEFAULT 1,
-    launch_telegram INTEGER NOT NULL DEFAULT 1,
     launch_push     INTEGER NOT NULL DEFAULT 1
 );
 
@@ -232,8 +180,6 @@ class Database:
         """Columns added after a release. CREATE TABLE IF NOT EXISTS won't
         add them to a database that already exists on the Pi."""
         added = [
-            ("pending_topics", "asked", "INTEGER NOT NULL DEFAULT 1"),
-            ("pending_topics", "transcript", "TEXT NOT NULL DEFAULT '[]'"),
             ("app_prefs", "breaking_push", "INTEGER NOT NULL DEFAULT 1"),
             ("app_prefs", "report_push", "INTEGER NOT NULL DEFAULT 1"),
         ]
@@ -329,12 +275,6 @@ class Database:
             (1 if enabled else 0, user_id),
         )
 
-    async def set_onboarded(self, user_id: int, done: bool = True) -> None:
-        await asyncio.to_thread(
-            self._write, "UPDATE users SET onboarded = ? WHERE user_id = ?",
-            (1 if done else 0, user_id),
-        )
-
     # --------------------------------------------------------------- topics
 
     async def add_topic(self, user_id: int, label: str, query: str) -> bool:
@@ -388,178 +328,6 @@ class Database:
             )
             return cur.rowcount > 0
         return await asyncio.to_thread(_update)
-
-    # -------------------------------------------------- pending clarification
-
-    async def set_pending_topic(self, user_id: int, label: str, question: str,
-                                *, transcript: list[dict] | None = None) -> None:
-        """Ask (or ask again), keeping what has been said so far."""
-        history = json.dumps(transcript or [])
-        asked = len(transcript or []) + 1
-        await asyncio.to_thread(
-            self._write,
-            """INSERT INTO pending_topics
-                   (user_id, label, question, asked_at, asked, transcript)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(user_id) DO UPDATE SET
-                   label = excluded.label,
-                   question = excluded.question,
-                   asked_at = excluded.asked_at,
-                   asked = excluded.asked,
-                   transcript = excluded.transcript""",
-            (user_id, label.strip(), question.strip(), _utcnow(), asked, history),
-        )
-
-    async def get_pending_topic(
-        self, user_id: int, *, max_age_minutes: int = 15,
-    ) -> tuple[str, str, list[dict]] | None:
-        """(label, question, what has been asked and answered so far)."""
-        rows = await asyncio.to_thread(
-            self._read,
-            "SELECT label, question, asked_at, transcript "
-            "FROM pending_topics WHERE user_id = ?",
-            (user_id,),
-        )
-        if not rows:
-            return None
-        try:
-            asked = datetime.fromisoformat(rows[0]["asked_at"])
-        except ValueError:
-            asked = datetime.now(timezone.utc)
-        if datetime.now(timezone.utc) - asked > timedelta(minutes=max_age_minutes):
-            await self.clear_pending_topic(user_id)
-            return None
-        try:
-            transcript = json.loads(rows[0]["transcript"])
-        except (json.JSONDecodeError, TypeError, KeyError):
-            transcript = []
-        return rows[0]["label"], rows[0]["question"], transcript
-
-    async def clear_pending_topic(self, user_id: int) -> None:
-        await asyncio.to_thread(
-            self._write, "DELETE FROM pending_topics WHERE user_id = ?", (user_id,)
-        )
-
-    async def clear_topics(self, user_id: int) -> int:
-        def _clear() -> int:
-            cur = self._write("DELETE FROM topics WHERE user_id = ?", (user_id,))
-            return cur.rowcount
-        return await asyncio.to_thread(_clear)
-
-    # ------------------------------------------------------- interest signals
-
-    async def record_signal(self, user_id: int, label: str, phrase: str) -> None:
-        await asyncio.to_thread(
-            self._write,
-            """INSERT INTO topic_signals (user_id, label, phrase, seen_at)
-               VALUES (?, ?, ?, ?)""",
-            (user_id, label.strip(), phrase.strip().lower()[:60], _utcnow()),
-        )
-
-    async def ripe_signals(self, user_id: int, *, min_mentions: int = 3,
-                           min_days: int = 7) -> list[tuple[str, str]]:
-        """Interests that have lasted, as (label, phrase).
-
-        A phrase only counts once it has been mentioned enough times AND the
-        mentions span more than a week - John's rule: a busy Nvidia week is
-        watched, not acted on, and only a still-busy week later changes
-        anything.
-        """
-        rows = await asyncio.to_thread(
-            self._read,
-            """SELECT label, phrase, COUNT(*) AS hits,
-                      MIN(seen_at) AS first_seen, MAX(seen_at) AS last_seen
-               FROM topic_signals
-               WHERE user_id = ? AND applied = 0
-               GROUP BY label, phrase
-               HAVING hits >= ?""",
-            (user_id, min_mentions),
-        )
-        ripe = []
-        for row in rows:
-            try:
-                first = datetime.fromisoformat(row["first_seen"])
-                last = datetime.fromisoformat(row["last_seen"])
-            except ValueError:
-                continue
-            if last - first >= timedelta(days=min_days):
-                ripe.append((row["label"], row["phrase"]))
-        return ripe
-
-    async def mark_signals_applied(self, user_id: int, label: str,
-                                   phrase: str) -> None:
-        await asyncio.to_thread(
-            self._write,
-            """UPDATE topic_signals SET applied = 1
-               WHERE user_id = ? AND label = ? AND phrase = ?""",
-            (user_id, label, phrase),
-        )
-
-    # ------------------------------------------------------------ news chat
-
-    CHAT_MEMORY = 8  # turns kept; enough for "and the other one?"
-
-    async def start_chat(self, user_id: int) -> None:
-        now = _utcnow()
-        await asyncio.to_thread(
-            self._write,
-            """INSERT INTO chat_sessions (user_id, history, started_at, last_at)
-               VALUES (?, '[]', ?, ?)
-               ON CONFLICT(user_id) DO UPDATE SET
-                   history = '[]', started_at = excluded.started_at,
-                   last_at = excluded.last_at""",
-            (user_id, now, now),
-        )
-
-    async def get_chat(self, user_id: int, *,
-                       idle_minutes: int = 20) -> list[dict] | None:
-        """The conversation so far, or None once it has gone quiet."""
-        rows = await asyncio.to_thread(
-            self._read,
-            "SELECT history, last_at FROM chat_sessions WHERE user_id = ?",
-            (user_id,),
-        )
-        if not rows:
-            return None
-        try:
-            last = datetime.fromisoformat(rows[0]["last_at"])
-        except ValueError:
-            last = datetime.now(timezone.utc)
-        if datetime.now(timezone.utc) - last > timedelta(minutes=idle_minutes):
-            await self.end_chat(user_id)
-            return None
-        try:
-            history = json.loads(rows[0]["history"])
-        except json.JSONDecodeError:
-            history = []
-        return history if isinstance(history, list) else []
-
-    async def append_chat(self, user_id: int, role: str, text: str) -> None:
-        def _append() -> None:
-            with self._lock:
-                rows = self.conn.execute(
-                    "SELECT history FROM chat_sessions WHERE user_id = ?",
-                    (user_id,),
-                ).fetchall()
-                if not rows:
-                    return
-                try:
-                    history = json.loads(rows[0]["history"])
-                except json.JSONDecodeError:
-                    history = []
-                history.append({"role": role, "text": text})
-                self.conn.execute(
-                    "UPDATE chat_sessions SET history = ?, last_at = ? "
-                    "WHERE user_id = ?",
-                    (json.dumps(history[-self.CHAT_MEMORY:]), _utcnow(), user_id),
-                )
-                self.conn.commit()
-        await asyncio.to_thread(_append)
-
-    async def end_chat(self, user_id: int) -> None:
-        await asyncio.to_thread(
-            self._write, "DELETE FROM chat_sessions WHERE user_id = ?", (user_id,)
-        )
 
     # ------------------------------------------------------------ dedupe
 
@@ -659,148 +427,48 @@ class Database:
                 self.conn.commit()
         await asyncio.to_thread(_exhaust)
 
-    # ------------------------------------------------------------ access
+    # ------------------------------------------------------------- owner
 
-    async def allowed_user_ids(self) -> set[int]:
-        rows = await asyncio.to_thread(
-            self._read, "SELECT user_id FROM allowed_users", ()
-        )
-        return {r["user_id"] for r in rows}
+    # Orbital serves one person. The owner is whoever claimed the install
+    # first (an admin_users row nobody added), else the oldest user - which
+    # covers databases from the Telegram days. Tables that held friends,
+    # access requests and chats are left alone in old databases, unused.
 
-    async def known_users(self) -> dict[int, sqlite3.Row]:
-        """Everyone the bot has ever seen, by id - names for a bare user id."""
+    async def owner_id(self) -> int | None:
         rows = await asyncio.to_thread(
             self._read,
-            "SELECT user_id, username, first_name, digest_time, timezone, "
-            "digest_enabled FROM users", (),
-        )
-        return {r["user_id"]: r for r in rows}
-
-    async def allowed_with_dates(self) -> dict[int, str]:
+            "SELECT user_id FROM admin_users WHERE added_by IS NULL "
+            "ORDER BY added_at, user_id LIMIT 1", ())
+        if rows:
+            return int(rows[0][0])
         rows = await asyncio.to_thread(
-            self._read, "SELECT user_id, added_at FROM allowed_users", ()
-        )
-        return {r["user_id"]: r["added_at"] for r in rows}
+            self._read, "SELECT user_id FROM users ORDER BY created_at, user_id "
+            "LIMIT 1", ())
+        return int(rows[0][0]) if rows else None
 
-    async def allow_user(self, user_id: int, added_by: int | None = None) -> None:
-        await asyncio.to_thread(
-            self._write,
-            """INSERT OR IGNORE INTO allowed_users (user_id, added_by, added_at)
-               VALUES (?, ?, ?)""",
-            (user_id, added_by, _utcnow()),
-        )
+    async def owner(self) -> User | None:
+        user_id = await self.owner_id()
+        return await self.get_user(user_id) if user_id is not None else None
 
-    async def deny_user(self, user_id: int) -> bool:
-        def _deny() -> bool:
-            cur = self._write(
-                "DELETE FROM allowed_users WHERE user_id = ?", (user_id,)
-            )
-            return cur.rowcount > 0
-        return await asyncio.to_thread(_deny)
-
-    async def admin_user_ids(self) -> set[int]:
-        rows = await asyncio.to_thread(
-            self._read, "SELECT user_id FROM admin_users", ()
-        )
-        return {r["user_id"] for r in rows}
-
-    async def add_admin(self, user_id: int, added_by: int | None = None) -> None:
-        await asyncio.to_thread(
-            self._write,
-            """INSERT OR IGNORE INTO admin_users (user_id, added_by, added_at)
-               VALUES (?, ?, ?)""",
-            (user_id, added_by, _utcnow()),
-        )
-
-    # -------------------------------------------------------- access requests
-
-    async def raise_access_request(
-        self, user_id: int, username: str | None, first_name: str | None,
-        note: str,
-    ) -> bool:
-        """Record someone asking for access. True if this is a new ask.
-
-        A person who keeps messaging gets one row, not one per message, so
-        the owner is asked once rather than pestered.
-        """
-        def _raise() -> bool:
-            with self._lock:
-                row = self.conn.execute(
-                    "SELECT status FROM access_requests WHERE user_id = ?",
-                    (user_id,),
-                ).fetchone()
-                if row is not None:
-                    return False
-                self.conn.execute(
-                    """INSERT INTO access_requests
-                       (user_id, username, first_name, note, requested_at)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (user_id, username, first_name, note[:400], _utcnow()),
-                )
-                self.conn.commit()
-                return True
-        return await asyncio.to_thread(_raise)
-
-    async def decide_access_request(self, user_id: int, status: str,
-                                    decided_by: int) -> bool:
-        """Approve or deny, once. False means someone already decided."""
-        def _decide() -> bool:
-            cur = self._write(
-                """UPDATE access_requests
-                   SET status = ?, decided_at = ?, decided_by = ?
-                   WHERE user_id = ? AND status = 'pending'""",
-                (status, _utcnow(), decided_by, user_id),
-            )
-            return cur.rowcount > 0
-        return await asyncio.to_thread(_decide)
-
-    async def list_access_requests(self, *, status: str | None = None,
-                                   limit: int = 20) -> list[sqlite3.Row]:
-        sql = "SELECT * FROM access_requests"
-        params: tuple = ()
-        if status:
-            sql += " WHERE status = ?"
-            params = (status,)
-        sql += " ORDER BY requested_at DESC LIMIT ?"
-        return await asyncio.to_thread(self._read, sql, params + (limit,))
-
-    async def get_access_request(self, user_id: int) -> sqlite3.Row | None:
-        rows = await asyncio.to_thread(
-            self._read, "SELECT * FROM access_requests WHERE user_id = ?",
-            (user_id,),
-        )
-        return rows[0] if rows else None
-
-    async def bootstrap_owner(self, user_id: int) -> bool:
-        """First-ever user claims ownership (whitelist + admin) atomically.
-
-        Returns True if this call was the one that claimed it, False if
-        someone already got there first (or a static config entry exists).
-        """
-        def _claim() -> bool:
-            with self._lock:
-                empty = self.conn.execute(
-                    "SELECT (SELECT COUNT(*) FROM allowed_users) "
-                    "+ (SELECT COUNT(*) FROM admin_users) AS n"
-                ).fetchone()["n"] == 0
-                if not empty:
-                    return False
-                now = _utcnow()
-                self.conn.execute(
-                    """INSERT OR IGNORE INTO allowed_users
-                       (user_id, added_by, added_at) VALUES (?, NULL, ?)""",
-                    (user_id, now),
-                )
-                self.conn.execute(
-                    """INSERT OR IGNORE INTO admin_users
-                       (user_id, added_by, added_at) VALUES (?, NULL, ?)""",
-                    (user_id, now),
-                )
-                self.conn.commit()
-                return True
-        return await asyncio.to_thread(_claim)
-
-    # ------------------------------------------------------------- stats
+    async def ensure_owner(self, default_digest_time: str = "08:00",
+                           name: str | None = None) -> User:
+        """The owner, created on a fresh install. A new owner gets id 1."""
+        user_id = await self.owner_id()
+        if user_id is None:
+            user_id = 1
+            await asyncio.to_thread(
+                self._write,
+                "INSERT OR IGNORE INTO admin_users (user_id, added_by, added_at) "
+                "VALUES (?, NULL, ?)", (user_id, _utcnow()))
+        user = await self.get_user(user_id)
+        if user is None:
+            user = await self.ensure_user(user_id, None, name, default_digest_time)
+        elif name and name != user.first_name:
+            await asyncio.to_thread(
+                self._write, "UPDATE users SET first_name = ? WHERE user_id = ?",
+                (name, user_id))
+            user = await self.get_user(user_id)
+        return user
 
     # ------------------------------------------------------ launch alerts
 
@@ -846,13 +514,6 @@ class Database:
         return cur.rowcount
 
     # ----------------------------------------------------------- reports
-
-    async def owner_ids(self) -> set[int]:
-        """Admins nobody added: whoever claimed the bot first."""
-        rows = await asyncio.to_thread(
-            self._read,
-            "SELECT user_id FROM admin_users WHERE added_by IS NULL", ())
-        return {r["user_id"] for r in rows}
 
     async def report_deliveries(self) -> set[tuple[str, int]]:
         """Every (file_id, chat_id) already sent or skipped. One row a day
@@ -922,6 +583,11 @@ class Database:
             (_utcnow(), token))
         return int(rows[0][0])
 
+    async def has_app_tokens(self, user_id: int) -> bool:
+        rows = await asyncio.to_thread(
+            self._read, "SELECT 1 FROM app_tokens WHERE user_id = ? LIMIT 1", (user_id,))
+        return bool(rows)
+
     async def revoke_app_tokens(self, user_id: int) -> int:
         cur = await asyncio.to_thread(
             self._write, "DELETE FROM app_tokens WHERE user_id = ?", (user_id,))
@@ -930,15 +596,13 @@ class Database:
     async def app_prefs(self, user_id: int) -> dict:
         rows = await asyncio.to_thread(
             self._read, "SELECT * FROM app_prefs WHERE user_id = ?", (user_id,))
+        prefs = {k: True for k in PREF_KEYS}
         if rows:
-            return {k: bool(rows[0][k]) for k in rows[0].keys() if k != "user_id"}
-        return {"digest_telegram": True, "digest_push": True,
-                "launch_telegram": True, "launch_push": True, "breaking_push": True,
-                "report_push": True}
+            prefs.update({k: bool(rows[0][k]) for k in PREF_KEYS if k in rows[0].keys()})
+        return prefs
 
     async def set_app_pref(self, user_id: int, key: str, value: bool) -> None:
-        if key not in ("digest_telegram", "digest_push", "launch_telegram",
-                       "launch_push", "breaking_push", "report_push"):
+        if key not in PREF_KEYS:
             raise ValueError(key)
         await asyncio.to_thread(
             self._write, "INSERT OR IGNORE INTO app_prefs (user_id) VALUES (?)",

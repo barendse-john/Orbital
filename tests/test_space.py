@@ -8,8 +8,8 @@ from pathlib import Path
 
 from newsbot.config import SpaceConfig
 from newsbot.db import Database
-from newsbot.space import (SpaceService, launches_ics, alert_key, due_reminders, launch_html,
-                           parse_launch, parse_tle)
+from newsbot.space import (SpaceService, launches_ics, alert_key, due_reminders,
+                           parse_launch, parse_tle, send_launch_reminders)
 from newsbot.news.models import Article
 from newsbot.webapp import NewsProxy, start_web
 
@@ -97,12 +97,6 @@ class ParseTests(unittest.TestCase):
         self.assertEqual([s[0] for s in sats], ["ISS (ZARYA)", "TIANGONG"])
         self.assertEqual(len(parse_tle(TLE, limit=1)), 1)
 
-    def test_html_is_escaped(self):
-        html = launch_html(parse_launch(raw_launch(name="A <b> & B")),
-                           "Europe/Amsterdam", "http://jb.local:8080", NOW)
-        self.assertIn("A &lt;b&gt; &amp; B", html)
-        self.assertIn("14:25", html)                # Amsterdam is UTC+2
-        self.assertIn("#launch=abc-1", html)
 
 
 class ReminderTests(unittest.TestCase):
@@ -137,6 +131,37 @@ class ReminderTests(unittest.TestCase):
                 self.assertEqual(await db.launch_alert_users(), [])
                 db.close()
         asyncio.run(run())
+
+
+class ReminderPushTests(unittest.IsolatedAsyncioTestCase):
+    """Reminders go to the owner's phone, once, and to nobody else."""
+
+    async def test_owner_gets_one_push_per_reminder(self):
+        class App:
+            def __init__(self):
+                self.pushed = []
+
+            async def launch_push(self, user_id, launch, lead, when):
+                self.pushed.append((user_id, launch.id, lead))
+                return True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "t.db")
+            db.connect()
+            owner = await db.ensure_owner()
+            await db.ensure_user(99, "friend", "Friend")   # from the Telegram days
+            await db.set_launch_alerts(owner.user_id, True)
+            await db.set_launch_alerts(99, True)
+            space = SpaceService(SpaceConfig(), Path(tmp) / "c.json")
+            soon = (datetime.now(timezone.utc) + timedelta(minutes=20))
+            space.launches = [parse_launch(raw_launch(
+                net=soon.strftime("%Y-%m-%dT%H:%M:%SZ")))]
+            app = App()
+            self.assertEqual(await send_launch_reminders(db, space, [1440, 30], app), 1)
+            self.assertEqual(await send_launch_reminders(db, space, [1440, 30], app), 0)
+            self.assertEqual(app.pushed, [(owner.user_id, "abc-1", 30)])
+            await space.close()
+            db.close()
 
 
 class FakeRSS:

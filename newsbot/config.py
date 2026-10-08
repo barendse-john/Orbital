@@ -40,13 +40,6 @@ def _expand(value: Any) -> Any:
 
 
 @dataclass
-class TelegramConfig:
-    token: str = ""
-    whitelist: list[int] = field(default_factory=list)
-    admins: list[int] = field(default_factory=list)
-
-
-@dataclass
 class AnthropicConfig:
     api_key: str = ""
     model: str = "claude-haiku-4-5"
@@ -122,9 +115,6 @@ class NewsConfig:
 @dataclass
 class DigestConfig:
     default_time: str = "08:00"
-    skip_when_empty: bool = False
-    # Show the lead article's picture above the digest text.
-    lead_image: bool = True
 
 
 @dataclass
@@ -132,7 +122,8 @@ class SpaceConfig:
     enabled: bool = True
     web_host: str = "0.0.0.0"
     web_port: int = 8080
-    # What Telegram messages link to. Empty = http://<pi hostname>.local:<port>
+    # The address your phone opens the app at; pairing links use it.
+    # Empty = http://<pi hostname>.local:<port>
     public_url: str = ""
     remind_before_minutes: list[int] = field(default_factory=lambda: [1440, 30])
     launch_refresh_minutes: int = 20
@@ -144,14 +135,11 @@ class SpaceConfig:
 
 @dataclass
 class ReportsConfig:
-    # Markdown reports (the Kalulu morning briefing) from a Google Drive
-    # folder, read in the Orbital app. Off by itself until a folder id is set.
+    # Markdown reports from a Google Drive folder, read in the Orbital app.
+    # Off by itself until a folder id is set.
     enabled: bool = True
     folder_id: str = ""
     service_account_file: str = "./data/google-service-account.json"
-    # Telegram user ids who may read them in the app and get notified.
-    # Empty = the bot's owner (not every admin).
-    chat_ids: list[int] = field(default_factory=list)
     poll_minutes: int = 15
     # Older than this when first seen = listed in the app without a
     # notification, so a fresh install doesn't ring the phone for old ones.
@@ -161,7 +149,6 @@ class ReportsConfig:
 
 @dataclass
 class Config:
-    telegram: TelegramConfig = field(default_factory=TelegramConfig)
     ai: AIConfig = field(default_factory=AIConfig)
     news: NewsConfig = field(default_factory=NewsConfig)
     digest: DigestConfig = field(default_factory=DigestConfig)
@@ -186,7 +173,7 @@ class Config:
 
         raw = _expand(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
 
-        tg = raw.get("telegram") or {}
+        # A `telegram:` section left over from before Orbital is ignored.
         ai = raw.get("ai") or {}
         anth = ai.get("anthropic") or {}
         olla = ai.get("ollama") or {}
@@ -199,11 +186,6 @@ class Config:
         sp_defaults = SpaceConfig()
 
         cfg = cls(
-            telegram=TelegramConfig(
-                token=str(tg.get("token") or ""),
-                whitelist=[int(x) for x in (tg.get("whitelist") or [])],
-                admins=[int(x) for x in (tg.get("admins") or [])],
-            ),
             ai=AIConfig(
                 backend=str(ai.get("backend") or "anthropic").lower(),
                 anthropic=AnthropicConfig(
@@ -234,8 +216,6 @@ class Config:
             ),
             digest=DigestConfig(
                 default_time=str(dig.get("default_time") or "08:00"),
-                skip_when_empty=bool(dig.get("skip_when_empty", False)),
-                lead_image=bool(dig.get("lead_image", True)),
             ),
             space=SpaceConfig(
                 enabled=bool(sp.get("enabled", True)),
@@ -265,11 +245,6 @@ class Config:
         return cfg
 
     def validate(self) -> None:
-        if not self.telegram.token:
-            raise ConfigError(
-                "No Telegram token. Set TELEGRAM_BOT_TOKEN in .env "
-                "(get one from @BotFather)."
-            )
         if self.ai.backend not in ("anthropic", "ollama"):
             raise ConfigError(
                 f"ai.backend must be 'anthropic' or 'ollama', got {self.ai.backend!r}"
@@ -282,12 +257,6 @@ class Config:
         if not self.news.gnews.api_key and not self.news.rss_enabled:
             raise ConfigError(
                 "No news source: GNews has no API key and RSS is disabled."
-            )
-        if not self.telegram.whitelist and not self.telegram.admins:
-            log.info(
-                "No whitelist configured - the first person to message this "
-                "bot becomes its owner automatically. Message it now if "
-                "that should be you."
             )
 
 
@@ -302,7 +271,6 @@ def _reports_cfg(raw: dict) -> ReportsConfig:
         service_account_file=str(raw.get("service_account_file")
                                  or os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
                                  or d.service_account_file),
-        chat_ids=[int(x) for x in (raw.get("chat_ids") or [])],
         poll_minutes=max(5, int(raw.get("poll_minutes") or d.poll_minutes)),
         max_age_hours=int(raw.get("max_age_hours") or d.max_age_hours),
         archive_dir=str(raw.get("archive_dir") or ""),

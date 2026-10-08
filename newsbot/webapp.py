@@ -1,13 +1,13 @@
 """The globe and the phone app, served from the Pi.
 
-Stdlib only: a ThreadingHTTPServer on a daemon thread inside the bot
-process, so the existing systemd unit and auto-deploy cover it. Launch and
-satellite data are snapshots SpaceService keeps; anything touching the
-database or the news runs as a coroutine on the bot's event loop.
+Stdlib only: a ThreadingHTTPServer on a daemon thread inside the service
+process, so the systemd unit and auto-deploy cover it. Launch and satellite
+data are snapshots SpaceService keeps; anything touching the database or the
+news runs as a coroutine on the service's event loop.
 
 Routes needing a user (/api/me/...) take `Authorization: Bearer <token>`,
-the token the app got from /app in Telegram. Everything else is public to
-whoever can reach the Pi - home Wi-Fi or your tailnet.
+the token the app got from a `python -m newsbot pair` link. Everything else
+is public to whoever can reach the Pi - home Wi-Fi or your tailnet.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ class NewsProxy:
 
     Always Google News RSS, never GNews: clicking around the globe would burn
     the 100-a-day GNews allowance the morning digests depend on. The search
-    runs on the bot's event loop (where the RSS client lives); this is called
+    runs on the service's event loop (where the RSS client lives); this is called
     from a web thread, so it hands the coroutine over and waits. Results are
     cached, so spinning back to the same country costs nothing.
     """
@@ -93,14 +93,12 @@ class NewsProxy:
 class Ctx:
     """What the request handler needs, bundled so it can be built in tests."""
 
-    def __init__(self, space, news=None, app=None, loop=None, globe_url: str = "",
-                 bot_username: str = ""):
+    def __init__(self, space, news=None, app=None, loop=None, globe_url: str = ""):
         self.space = space
         self.news = news
         self.app = app
         self.loop = loop
         self.globe_url = globe_url
-        self.bot_username = bot_username
 
     def run(self, coro, timeout: float = 60):
         return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout=timeout)
@@ -110,7 +108,7 @@ def make_handler(space, news: NewsProxy | None = None, ctx: Ctx | None = None):
     ctx = ctx or Ctx(space, news)
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "newsbot-globe"
+        server_version = "orbital"
 
         # ------------------------------------------------------ plumbing
 
@@ -181,6 +179,13 @@ def make_handler(space, news: NewsProxy | None = None, ctx: Ctx | None = None):
 
         def _public(self, path: str, query: dict) -> None:
             space = ctx.space
+            if space is None and (path.startswith("/api/launches") or path.startswith(
+                    "/api/satellites") or path.startswith("/calendar")):
+                # space.enabled is false: the app still works, with no launches.
+                if path.startswith("/calendar"):
+                    return self._send(404, b"Launch tracking is off", "text/plain")
+                return self._json(200, {"launches": [], "updated": 0}
+                                  if path == "/api/launches" else {"groups": {}, "updated": 0})
             if path == "/api/launches":
                 return self._send(200, space.launches_json, "application/json")
             if path == "/api/satellites":
@@ -225,7 +230,7 @@ def make_handler(space, news: NewsProxy | None = None, ctx: Ctx | None = None):
                 return self._json(200, {
                     "push": bool(app and app.pusher and app.pusher.enabled),
                     "vapid": app.pusher.public_key if app and app.pusher else "",
-                    "bot": ctx.bot_username, "globe": ctx.globe_url})
+                    "globe": ctx.globe_url})
             uid = self._user()
             run = ctx.run
             if path == "/api/me" and method == "GET":
@@ -270,8 +275,8 @@ def make_handler(space, news: NewsProxy | None = None, ctx: Ctx | None = None):
 
 def start_web(space, host: str, port: int, news: NewsProxy | None = None,
               ctx: Ctx | None = None) -> ThreadingHTTPServer | None:
-    """Start serving; returns None (and the bot carries on) if the port is
-    taken, rather than taking the whole bot down over the globe."""
+    """Start serving; returns None (and the service carries on) if the port is
+    taken, rather than taking the whole service down over the globe."""
     try:
         server = ThreadingHTTPServer((host, port), make_handler(space, news, ctx))
     except OSError as exc:

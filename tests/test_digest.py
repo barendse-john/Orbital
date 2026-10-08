@@ -1,4 +1,4 @@
-"""End-to-end digest assembly with a stub model and a stub Telegram bot."""
+"""End-to-end briefing assembly with a stub model and a stub app."""
 
 import json
 import tempfile
@@ -6,7 +6,6 @@ import unittest
 from pathlib import Path
 
 from newsbot.ai.base import AIBackend, AIError
-from newsbot.brain import parse_intent
 from newsbot.config import Config, DigestConfig, GNewsConfig, NewsConfig
 from newsbot.db import Database
 from newsbot.digest import DigestService
@@ -15,7 +14,7 @@ from newsbot.news.models import Article
 
 
 class StubAI(AIBackend):
-    """Answers intent prompts with JSON and summary prompts with a list."""
+    """Answers summary prompts with one line per article."""
 
     name = "stub"
 
@@ -32,20 +31,17 @@ class StubAI(AIBackend):
             count = sum(1 for line in user.splitlines()
                         if line.strip()[:1].isdigit() and "." in line)
             return json.dumps([f"Summary {i + 1}." for i in range(count)])
-        return json.dumps({
-            "action": "add_topic", "topic": "Manchester United",
-            "query": "Manchester United", "reply": "Following Manchester United.",
-        })
+        return "[]"
 
 
-class StubBot:
+class StubApp:
+    """Stands in for AppService: records every briefing handed to the app."""
+
     def __init__(self):
-        self.messages = []
-        self.kwargs = []
+        self.briefings = []
 
-    async def send_message(self, chat_id, text, **kwargs):
-        self.messages.append((chat_id, text))
-        self.kwargs.append(kwargs)
+    async def on_briefing(self, user_id, items):
+        self.briefings.append((user_id, items))
 
 
 class StubSource:
@@ -84,6 +80,8 @@ class DigestTests(unittest.IsolatedAsyncioTestCase):
         ])
         self.ai = StubAI()
         self.digest = DigestService(self.db, self.fetcher, self.ai, self.cfg)
+        self.app = StubApp()
+        self.digest.app = self.app
 
         self.user = await self.db.ensure_user(7, "john", "John")
         await self.db.set_timezone(7, "Europe/Amsterdam")
@@ -96,217 +94,66 @@ class DigestTests(unittest.IsolatedAsyncioTestCase):
         self.db.close()
         self.tmp.cleanup()
 
-    async def test_digest_is_one_message_covering_every_topic(self):
-        bot = StubBot()
-        sent = await self.digest.send_digest(bot, self.user)
+    def urls(self, n=-1):
+        return [i["url"] for i in self.app.briefings[n][1]]
+
+    async def test_the_briefing_covers_every_topic(self):
+        sent = await self.digest.send_digest(self.user)
         self.assertEqual(sent, 3)
-        self.assertEqual(len(bot.messages), 1)
-        body = bot.messages[0][1]
-        self.assertIn("Manchester United", body)
-        self.assertIn("Rockets", body)
-        self.assertIn("https://a/1", body)
-        self.assertIn("Summary 1.", body)
+        self.assertEqual(len(self.app.briefings), 1)
+        user_id, items = self.app.briefings[0]
+        self.assertEqual(user_id, 7)
+        self.assertEqual({i["topic"] for i in items}, {"Manchester United", "Rockets"})
+        self.assertIn("https://a/1", self.urls())
+        self.assertIn("Summary 1.", [i["summary"] for i in items])
 
     async def test_the_cap_keeps_the_best_story_of_each_topic(self):
         self.cfg.news.max_articles_total = 2
-        bot = StubBot()
-        sent = await self.digest.send_digest(bot, self.user)
+        sent = await self.digest.send_digest(self.user)
         self.assertEqual(sent, 2)
-        self.assertEqual(len(bot.messages), 1)
-        body = bot.messages[0][1]
-        self.assertIn("Manchester United", body)
-        self.assertIn("Rockets", body)
+        self.assertEqual({i["topic"] for i in self.app.briefings[0][1]},
+                         {"Manchester United", "Rockets"})
         # BBC outranks Sky, so the weaker United story is the one dropped.
-        self.assertIn("https://a/1", body)
-        self.assertNotIn("https://a/2", body)
+        self.assertIn("https://a/1", self.urls())
+        self.assertNotIn("https://a/2", self.urls())
 
     async def test_articles_cut_by_the_cap_come_back_next_time(self):
         self.cfg.news.max_articles_total = 2
-        bot = StubBot()
-        await self.digest.send_digest(bot, self.user)
-        second = await self.digest.send_digest(bot, self.user)
+        await self.digest.send_digest(self.user)
+        second = await self.digest.send_digest(self.user)
         self.assertEqual(second, 1)
-        self.assertIn("https://a/2", bot.messages[-1][1])
+        self.assertEqual(self.urls(), ["https://a/2"])
 
     async def test_articles_are_never_sent_twice(self):
-        bot = StubBot()
-        await self.digest.send_digest(bot, self.user)
-        second = await self.digest.send_digest(bot, self.user)
+        await self.digest.send_digest(self.user)
+        second = await self.digest.send_digest(self.user)
         self.assertEqual(second, 0)
-        self.assertIn("Nothing new today", bot.messages[-1][1])
+        self.assertEqual(len(self.app.briefings), 1)   # nothing new, no push
 
     async def test_a_story_matching_two_topics_appears_once(self):
         await self.db.add_topic(7, "Strikers", "United sign")
-        bot = StubBot()
-        sent = await self.digest.send_digest(bot, await self.db.get_user(7))
+        sent = await self.digest.send_digest(await self.db.get_user(7))
         self.assertEqual(sent, 3)
-        self.assertEqual(bot.messages[0][1].count("https://a/1"), 1)
+        self.assertEqual(self.urls().count("https://a/1"), 1)
 
-    async def test_digest_still_goes_out_when_the_model_is_down(self):
+    async def test_the_briefing_still_goes_out_when_the_model_is_down(self):
         self.digest.ai = StubAI(fail=True)
-        bot = StubBot()
-        sent = await self.digest.send_digest(bot, self.user)
+        sent = await self.digest.send_digest(self.user)
         self.assertEqual(sent, 3)
-        self.assertIn("United sign a striker", bot.messages[0][1])  # no summary
+        self.assertIn("United sign a striker",
+                      [i["title"] for i in self.app.briefings[0][1]])
 
-    async def test_search_reply_marks_results_as_seen(self):
-        body = await self.digest.search_reply(7, "United")
-        self.assertIn("https://a/1", body)
-        bot = StubBot()
-        sent = await self.digest.send_digest(bot, self.user)
-        self.assertEqual(sent, 1)  # only the rocket story is left
+    async def test_pictures_are_passed_to_the_app(self):
+        await self.digest.send_digest(self.user)
+        images = {i["url"]: i["image"] for i in self.app.briefings[0][1]}
+        self.assertEqual(images["https://a/2"], "https://img/2.jpg")
 
-    async def test_lead_picture_heads_the_message(self):
-        bot = StubBot()
-        await self.digest.send_digest(bot, self.user)
-        opts = bot.kwargs[0].get("link_preview_options")
-        self.assertIsNotNone(opts)
-        # First article with a known picture wins, not simply the first article.
-        self.assertEqual(opts.url, "https://a/2")
-        self.assertTrue(opts.show_above_text)
-        self.assertNotIn("disable_web_page_preview", bot.kwargs[0])
-
-    async def test_a_publisher_url_is_tried_even_with_no_known_picture(self):
-        # GNews sometimes sends no image; the page usually still has an
-        # og:image, so a real publisher link is worth previewing.
-        self.fetcher.rss.articles = [
-            Article(title="United draw at home", url="https://sky.com/2",
-                    source="Sky"),
-        ]
-        bot = StubBot()
-        await self.digest.send_digest(bot, self.user)
-        self.assertEqual(
-            bot.kwargs[0]["link_preview_options"].url, "https://sky.com/2"
-        )
-
-    async def test_google_news_redirects_are_never_previewed(self):
-        self.fetcher.rss.articles = [
-            Article(title="United draw at home", source="Sky",
-                    url="https://news.google.com/rss/articles/CBMiabc"),
-        ]
-        bot = StubBot()
-        await self.digest.send_digest(bot, self.user)
-        self.assertNotIn("link_preview_options", bot.kwargs[0])
-        self.assertTrue(bot.kwargs[0]["disable_web_page_preview"])
-
-    async def test_lead_picture_can_be_switched_off(self):
-        self.cfg.digest.lead_image = False
-        bot = StubBot()
-        await self.digest.send_digest(bot, self.user)
-        self.assertNotIn("link_preview_options", bot.kwargs[0])
-
-    async def test_no_topics_prompts_the_user(self):
-        await self.db.clear_topics(7)
-        bot = StubBot()
-        await self.digest.send_digest(bot, self.user, manual=True)
-        self.assertIn("No topics saved yet", bot.messages[0][1])
-
-
-class IntentWithModelTests(unittest.IsolatedAsyncioTestCase):
-    async def test_model_json_is_used(self):
-        intent = await parse_intent(StubAI(), "i like Manchester United")
-        self.assertEqual(intent.action, "add_topic")
-        self.assertEqual(intent.topic, "Manchester United")
-        self.assertEqual(intent.reply, "Following Manchester United.")
-
-    async def test_keyword_rules_take_over_when_the_model_fails(self):
-        intent = await parse_intent(StubAI(fail=True), "follow Arsenal")
-        self.assertEqual(intent.action, "add_topic")
-        self.assertEqual(intent.topic, "Arsenal")
+    async def test_no_topics_means_no_briefing(self):
+        for topic in await self.db.list_topics(7):
+            await self.db.remove_topic(7, topic.label)
+        self.assertEqual(await self.digest.send_digest(self.user), 0)
+        self.assertEqual(self.app.briefings, [])
 
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class WideningSearchTests(unittest.IsolatedAsyncioTestCase):
-    """A question is not a digest: look further back before giving up."""
-
-    async def asyncSetUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.db = Database(Path(self.tmp.name) / "t.db")
-        self.db.connect()
-        self.cfg = Config(news=NewsConfig(gnews=GNewsConfig(api_key="")),
-                          digest=DigestConfig())
-        self.fetcher = NewsFetcher(self.cfg.news, self.db)
-        self.windows = []
-
-    async def asyncTearDown(self):
-        await self.fetcher.close()
-        self.db.close()
-        self.tmp.cleanup()
-
-    def _source(self, found_at_hours):
-        windows = self.windows
-
-        class Source:
-            api_key = ""
-            enabled = False
-
-            async def search(inner, query, *, limit=5, lookback_hours=24):
-                windows.append(lookback_hours)
-                if lookback_hours < found_at_hours:
-                    return []
-                return [Article(title="King Oyo turns 34", url="https://a/1",
-                                source="Daily Monitor")]
-
-            async def close(inner):
-                pass
-
-        return Source()
-
-    async def test_it_stops_as_soon_as_something_turns_up(self):
-        self.fetcher.rss = self._source(0)
-        articles, _source, trace = await self.fetcher.widening_search("king oyo")
-        self.assertTrue(articles)
-        self.assertEqual(trace.window, "24h")
-        self.assertFalse(trace.was_rewritten)
-        self.assertEqual(self.windows, [24])  # no wasted searches
-
-    async def test_it_reaches_back_a_month_when_today_has_nothing(self):
-        self.fetcher.rss = self._source(24 * 30)
-        articles, _source, trace = await self.fetcher.widening_search("king oyo")
-        self.assertTrue(articles)
-        self.assertEqual(trace.window, "month")
-        self.assertEqual(self.windows, [24, 168, 720])
-
-    async def test_a_month_of_nothing_is_reported_as_nothing(self):
-        self.fetcher.rss = self._source(99999)
-        articles, source, _trace = await self.fetcher.widening_search("king oyo")
-        self.assertEqual(articles, [])
-        self.assertEqual(source, "none")
-
-
-class BackgroundFallbackTests(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.db = Database(Path(self.tmp.name) / "t.db")
-        self.db.connect()
-        self.cfg = Config(news=NewsConfig(gnews=GNewsConfig(api_key="")),
-                          digest=DigestConfig())
-        self.fetcher = NewsFetcher(self.cfg.news, self.db)
-        self.fetcher.rss = StubSource([])
-
-    async def asyncTearDown(self):
-        await self.fetcher.close()
-        self.db.close()
-        self.tmp.cleanup()
-
-    async def test_no_reporting_still_gets_an_answer(self):
-        class Knowing(StubAI):
-            async def complete(inner, system, user, *, max_tokens=600,
-                               temperature=0.0, attempts=None):
-                return ("King Oyo Nyimba Kabamba Iguru Rukidi IV has reigned "
-                        "over Toro since 1995, crowned at three.")
-
-        digest = DigestService(self.db, self.fetcher, Knowing(), self.cfg)
-        body = await digest.search_reply(7, "King Oyo Uganda")
-        self.assertIn("reigned", body)
-        # Framed as background, never passed off as reporting.
-        self.assertIn("may be out of date", body)
-
-    async def test_it_says_so_when_it_knows_nothing_either(self):
-        digest = DigestService(self.db, self.fetcher, StubAI(fail=True),
-                               self.cfg)
-        body = await digest.search_reply(7, "King Oyo Uganda")
-        self.assertIn("don't have much on it", body)
